@@ -21,12 +21,16 @@ export function useScrolled(threshold = 20): boolean {
 
 /* ─────────────────────────────────────────
    useCursor — track mouse & update custom cursor elements
+   Only activates on pages that render <PageEffects />
 ───────────────────────────────────────── */
 export function useCursor() {
   useEffect(() => {
     const dot  = document.getElementById('cursor-dot')
     const ring = document.getElementById('cursor-ring')
     if (!dot || !ring) return
+
+    // Enable custom cursor only on this page
+    document.body.classList.add('custom-cursor')
 
     let mouseX = 0, mouseY = 0
     let ringX  = 0, ringY  = 0
@@ -59,6 +63,8 @@ export function useCursor() {
     raf = requestAnimationFrame(animate)
 
     return () => {
+      // Restore normal cursor when leaving this page
+      document.body.classList.remove('custom-cursor', 'cursor-hover')
       window.removeEventListener('mousemove', onMove)
       cancelAnimationFrame(raf)
     }

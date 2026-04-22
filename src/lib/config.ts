@@ -2,6 +2,17 @@
    LibrarySpace — Site Configuration
    Single source of truth for content & tokens
 ───────────────────────────────────────────────── */
+export const STATE_CITY_MAP: Record<string, string[]> = {
+  'Uttar Pradesh': ['Meerut', 'Noida', 'Ghaziabad', 'Agra', 'Lucknow', 'Kanpur', 'Varanasi'],
+  'Delhi': ['New Delhi', 'Dwarka', 'Rohini', 'Saket'],
+  'Maharashtra': ['Mumbai', 'Pune', 'Nagpur', 'Nashik'],
+  'Uttarakhand': ['Dehradun', 'Haridwar', 'Roorkee', 'Haldwani'],
+  'Karnataka': ['Bangalore', 'Mysore'],
+  'Tamil Nadu': ['Chennai', 'Coimbatore'],
+  'Gujarat': ['Ahmedabad', 'Surat', 'Vadodara'],
+  'Rajasthan': ['Jaipur', 'Udaipur'],
+}
+
 
 export const SITE = {
   name: 'LibrarySpace',
@@ -9,7 +20,7 @@ export const SITE = {
   description:
     'Find the perfect study library near you, see live seat availability, and reserve your spot — all before you leave home.',
   url: 'https://libraryspace.in',
-  location: 'Meerut, UP',
+  location: 'Haldwani, UP',
   contact: {
     email: 'hello@libraryspace.in',
     whatsapp: '+91-XXXXXXXXXX',
@@ -70,7 +81,7 @@ export const FEATURES: Feature[] = [
     description:
       'See exactly which seats are free, taken, or reserved in real time. No more calling ahead or wasting a trip.',
     accent: 'blue',
-    large: true,
+    // large: true,
   },
   {
     icon: '⚡',
@@ -273,7 +284,7 @@ export const TESTIMONIALS: Testimonial[] = [
   {
     text: 'I used to waste 30 minutes every morning checking if my favourite seat was free. LibrarySpace ended that. Book in 60 seconds the night before.',
     name: 'Aarav Sharma',
-    role: 'UPSC Aspirant, Meerut',
+    role: 'UPSC Aspirant, Haldwani',
     color: '#1246FF',
   },
   {
@@ -297,7 +308,7 @@ export const TESTIMONIALS: Testimonial[] = [
   {
     text: 'I manage 3 libraries from one dashboard. Revenue, occupancy, today\'s bookings — all in one view. Game changer for multi-branch ops.',
     name: 'Priya Mishra',
-    role: 'Owner, 3 libraries in Meerut',
+    role: 'Owner, 3 libraries in Haldwani',
     color: '#D42B2B',
   },
   {

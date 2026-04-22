@@ -102,7 +102,7 @@ export default function HeroSection() {
         {/* Headline */}
         <h1
           className="animate-fade-up delay-200 font-syne font-extrabold text-ink mb-0"
-          style={{ fontSize: 'clamp(52px, 7vw, 96px)', lineHeight: 0.93, letterSpacing: '-0.04em' }}
+          style={{ fontSize: 'clamp(38px, 4vw, 96px)', lineHeight: 0.93, letterSpacing: '-0.04em' }}
         >
           <span className="block">Your study seat,</span>
           <span className="block text-blue" style={{ fontFamily: 'Instrument Serif, serif', fontWeight: 400, letterSpacing: '-0.03em' }}>

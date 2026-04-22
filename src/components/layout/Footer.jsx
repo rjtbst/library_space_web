@@ -74,7 +74,7 @@ export default function Footer() {
         <div className="flex flex-col md:flex-row items-center justify-between gap-3 text-[12px] text-white/25">
           <span>© {new Date().getFullYear()} LibrarySpace. All rights reserved.</span>
           <span className="flex items-center gap-1">
-            Made with <span className="text-red-400 mx-0.5">♥</span> in Meerut, UP
+            Made with <span className="text-red-400 mx-0.5">♥</span> in Haldwani, UP
           </span>
         </div>
       </div>

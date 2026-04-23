@@ -125,9 +125,9 @@ export function HowItWorksSection() {
   return (
     <section id="howitworks" className="relative overflow-hidden py-24 px-10 bg-ink">
       {/* Background text */}
-    <div className="absolute pointer-events-none font-syne font-extrabold text-white/[0.05] select-none text-center 
+    <div className="absolute pointer-events-none font-syne font-extrabold text-white/[0.08] select-none text-center 
    whitespace-normal md:whitespace-nowrap
-  text-[clamp(48px,12vw,160px)] tracking-[-0.5vw] leading-[0.9]
+  text-[clamp(48px,7vw,160px)] tracking-[-0.5vw] leading-[0.9]
   top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
   HOW IT WORKS
 </div>

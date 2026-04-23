@@ -7,8 +7,8 @@ import { setRole } from '@/lib/actions/auth'
 import type { UserRole } from '@/lib/supabase/types'
 
 const ROLES: { id: UserRole; emoji: string; title: string; subtitle: string; accent: string; bg: string; features: string[] }[] = [
-  { id: 'student', emoji: '🎓', title: 'Student', subtitle: 'Find & book study seats at libraries near me.', accent: '#1246FF', bg: '#E8EFFE', features: ['Live seat availability', 'Instant booking', 'Book lending', 'Membership plans'] },
-  { id: 'owner',   emoji: '🏛️', title: 'Library Owner', subtitle: 'Accept online bookings & manage my library.', accent: '#0D7C54', bg: '#D1FAE5', features: ['Online bookings', 'Revenue dashboard', 'Staff management', 'Analytics'] },
+  { id: 'student', emoji: '🎓', title: 'Student', subtitle: 'Find study libraries, book seats, borrow books', accent: '#1246FF', bg: '#E8EFFE', features: ['Discover libraries on map','Live seat availability', 'Instant booking', 'Book lending', 'Membership plans'] },
+  { id: 'owner',   emoji: '🏛️', title: 'Library Owner', subtitle: 'Register libraries, manage staff, track revenue', accent: '#0D7C54', bg: '#D1FAE5', features: ['Online bookings', 'Revenue dashboard', 'Staff management', 'Analytics'] },
   { id: 'staff',   emoji: '🔑', title: 'Library Staff', subtitle: 'Manage daily check-ins and book issuance.', accent: '#C8A84B', bg: '#FEF3E2', features: ['QR scanner', "Today's bookings", 'Book issuance', 'Walk-in desk'] },
 ]
 

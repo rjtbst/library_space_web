@@ -4,8 +4,9 @@
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { setRole } from '@/lib/actions/auth'
-import type { UserRole } from '@/lib/supabase/types'
+import type { Enums } from '@/lib/supabase/types'
 
+type UserRole = Enums<'user_role'>
 const ROLES: { id: UserRole; emoji: string; title: string; subtitle: string; accent: string; bg: string; features: string[] }[] = [
   { id: 'student', emoji: '🎓', title: 'Student', subtitle: 'Find study libraries, book seats, borrow books', accent: '#1246FF', bg: '#E8EFFE', features: ['Discover libraries on map','Live seat availability', 'Instant booking', 'Book lending', 'Membership plans'] },
   { id: 'owner',   emoji: '🏛️', title: 'Library Owner', subtitle: 'Register libraries, manage staff, track revenue', accent: '#0D7C54', bg: '#D1FAE5', features: ['Online bookings', 'Revenue dashboard', 'Staff management', 'Analytics'] },
@@ -25,7 +26,7 @@ export default function RolePage() {
 
   start(async () => {
     const res = await setRole(selected)
-
+    console.log('setRole result:', res)
     if (res.success === false) {
       setErrMsg(res.error)
       return

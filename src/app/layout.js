@@ -66,8 +66,8 @@ export default function RootLayout({ children }) {
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
       </head>
       <body className="font-dm bg-surface text-ink antialiased overflow-x-hidden">
-        <div id="cursor-dot" aria-hidden="true" />
-        <div id="cursor-ring" aria-hidden="true" />
+        {/* <div id="cursor-dot" aria-hidden="true" />
+        <div id="cursor-ring" aria-hidden="true" /> */}
         {children}
       </body>
     </html>

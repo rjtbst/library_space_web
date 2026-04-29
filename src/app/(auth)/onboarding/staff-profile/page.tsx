@@ -1,123 +1,318 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useState, useTransition, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { updateProfile } from '@/lib/actions/auth'
-import { STATE_CITY_MAP } from '@/lib/config'
+import { getStaffAssignedLibraries } from '@/lib/actions/staff'
+
+const ACCENT       = '#0597A7'
+const ACCENT_LIGHT = '#E0F6F8'
+const ACCENT_DARK  = '#04728F'
+
+function Steps() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0, marginBottom: 32 }}>
+      {[
+        { label: 'Phone',   done: true },
+        { label: 'OTP',     done: true },
+        { label: 'Profile', done: false, active: true },
+        { label: 'Ready',   done: false },
+      ].map((s, i, arr) => (
+        <div key={s.label} style={{ display: 'flex', alignItems: 'center' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5 }}>
+            <div style={{
+              width: 28, height: 28, borderRadius: '50%', display: 'flex',
+              alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700,
+              background: s.done ? ACCENT : s.active ? ACCENT : '#E2DDD4',
+              color: s.done || s.active ? '#fff' : '#9AAAB8',
+              boxShadow: s.active ? `0 0 0 4px ${ACCENT_LIGHT}` : 'none',
+              transition: 'all .2s',
+            }}>
+              {s.done ? '✓' : i + 1}
+            </div>
+            <span style={{
+              fontSize: 10, fontWeight: s.active ? 700 : 500,
+              color: s.active ? ACCENT : s.done ? '#3A4A5C' : '#9AAAB8',
+              letterSpacing: '.02em',
+            }}>
+              {s.label}
+            </span>
+          </div>
+          {i < arr.length - 1 && (
+            <div style={{
+              width: 40, height: 2,
+              background: s.done ? ACCENT : '#E2DDD4',
+              margin: '0 4px', marginBottom: 18, transition: 'background .3s',
+            }} />
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const inpBase: React.CSSProperties = {
+  width: '100%', padding: '11px 13px',
+  border: '1.5px solid #E2DDD4', borderRadius: 10,
+  fontSize: 14, color: '#0A0D12', outline: 'none',
+  fontFamily: 'DM Sans, sans-serif', background: '#FDFCF9',
+  boxSizing: 'border-box', transition: 'border-color .15s, box-shadow .15s',
+  appearance: 'none' as const,
+}
+
+function Field({
+  label, required, optional, children,
+}: { label: string; required?: boolean; optional?: boolean; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ fontSize: 12, fontWeight: 600, color: '#3A4A5C', display: 'block', marginBottom: 6, letterSpacing: '.01em' }}>
+        {label}
+        {required && <span style={{ color: ACCENT, marginLeft: 2 }}>*</span>}
+        {optional && <span style={{ color: '#9AAAB8', fontWeight: 400, marginLeft: 4 }}>(optional)</span>}
+      </label>
+      {children}
+    </div>
+  )
+}
+
+type AssignedLibrary = {
+  id: string
+  name: string
+  area: string
+  city: string
+  assigned: boolean
+}
 
 export default function StaffProfilePage() {
   const router = useRouter()
+  const [firstName,  setFirstName]  = useState('')
+  const [lastName,   setLastName]   = useState('')
+  const [email,      setEmail]      = useState('')
+  const [error,      setError]      = useState('')
+  const [libraries,  setLibraries]  = useState<AssignedLibrary[]>([])
+  const [isPending,  startTransition] = useTransition()
 
-  const [name, setName] = useState('')
-  const [state, setState] = useState('')
-  const [city, setCity] = useState('')
-  const [error, setError] = useState('')
-  const [isPending, startTransition] = useTransition()
+  const valid = firstName.trim().length >= 1
 
-  const valid = name.trim().length >= 2 && state && city
+  useEffect(() => {
+    // Fetch libraries this staff user is assigned to (or pending assignment)
+    getStaffAssignedLibraries().then(libs => {
+      if (libs) setLibraries(libs)
+    })
+  }, [])
+
+  const onFocus = (e: React.FocusEvent<HTMLInputElement>) => {
+    e.target.style.borderColor = ACCENT
+    e.target.style.boxShadow   = `0 0 0 3px ${ACCENT_LIGHT}`
+  }
+  const onBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    e.target.style.borderColor = '#E2DDD4'
+    e.target.style.boxShadow   = 'none'
+  }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-
+    const full_name = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ')
     startTransition(async () => {
       const res = await updateProfile({
-        full_name: name.trim(),
-        state,
-        city
+        full_name,
+        state: '',
+        city: '',
+        ...(email ? { email } : {}),
       })
-
       if (res.success === false) {
         setError(res.error)
         return
       }
-
       router.push(res.data.redirectTo)
     })
   }
 
-  const cities = state ? STATE_CITY_MAP[state] || [] : []
-
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,#F4F7FB,#EDE8DC)', fontFamily: 'DM Sans, sans-serif', padding: '24px 16px' }}>
-      <div style={{ width: '100%', maxWidth: 440 }}>
-        
-        <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <div style={{ width: 44, height: 44, borderRadius: 12, background: '#C8A84B', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>🔑</div>
-          <h1 style={{ fontSize: 26 }}>Staff profile</h1>
-          <p style={{ fontSize: 14, color: '#6B7689' }}>Your library owner will link you to their library.</p>
+    <div style={{
+      minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'linear-gradient(135deg,#F4F7FB 0%,#EDE8DC 100%)',
+      fontFamily: 'DM Sans, sans-serif', padding: '24px 16px', position: 'relative',
+    }}>
+      {/* Blobs */}
+      <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0 }}>
+        <div style={{ position: 'absolute', width: 500, height: 500, top: -150, right: -100, borderRadius: '50%', background: 'radial-gradient(circle,rgba(5,151,167,.05),transparent 70%)' }} />
+        <div style={{ position: 'absolute', width: 400, height: 400, bottom: -100, left: -80, borderRadius: '50%', background: 'radial-gradient(circle,rgba(18,70,255,.04),transparent 70%)' }} />
+      </div>
+
+      <div style={{ width: '100%', maxWidth: 480, position: 'relative', zIndex: 1 }}>
+        <Steps />
+
+        {/* Header */}
+        <div style={{ textAlign: 'center', marginBottom: 28 }}>
+          <div style={{
+            width: 52, height: 52, borderRadius: 14, background: ACCENT,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            margin: '0 auto 16px', boxShadow: '0 4px 18px rgba(5,151,167,.3)', fontSize: 24,
+          }}>
+            🔑
+          </div>
+          <h1 style={{
+            fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 26,
+            color: '#0A0D12', letterSpacing: '-0.04em', marginBottom: 6,
+          }}>
+            Staff Setup
+          </h1>
+          <p style={{ fontSize: 14, color: '#6B7689', fontWeight: 300, lineHeight: 1.5, margin: 0 }}>
+            Complete your profile to start working
+          </p>
         </div>
 
-        <div style={{ background: '#FDFCF9', border: '1px solid #E2DDD4', borderRadius: 20, padding: '32px 28px' }}>
-          
+        {/* Info banner */}
+        <div style={{
+          background: ACCENT_LIGHT, border: `1px solid rgba(5,151,167,.25)`,
+          borderRadius: 12, padding: '12px 14px', marginBottom: 20,
+          display: 'flex', gap: 10, alignItems: 'flex-start',
+        }}>
+          <span style={{ fontSize: 18, flexShrink: 0 }}>📨</span>
+          <p style={{ fontSize: 13, color: '#0A5F6B', margin: 0, lineHeight: 1.5 }}>
+            Your library owner will assign you to their library once your profile is complete.
+            Share your registered phone number with them to get linked.
+          </p>
+        </div>
+
+        {/* Card */}
+        <div style={{
+          background: '#FDFCF9', border: '1px solid #E2DDD4',
+          borderRadius: 20, padding: '28px 28px 24px',
+          boxShadow: '0 4px 28px rgba(10,13,18,.08)',
+        }}>
           <form onSubmit={handleSubmit}>
 
-            {/* Name */}
-            <div style={{ marginBottom: 16 }}>
-              <label>Your name *</label>
+            {/* Name row */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+              <Field label="First name" required>
+                <input
+                  type="text" autoFocus autoComplete="given-name"
+                  placeholder="Mohit"
+                  value={firstName}
+                  onChange={e => setFirstName(e.target.value)}
+                  style={inpBase} onFocus={onFocus} onBlur={onBlur}
+                />
+              </Field>
+              <Field label="Last name">
+                <input
+                  type="text" autoComplete="family-name"
+                  placeholder="Verma"
+                  value={lastName}
+                  onChange={e => setLastName(e.target.value)}
+                  style={inpBase} onFocus={onFocus} onBlur={onBlur}
+                />
+              </Field>
+            </div>
+
+            <Field label="Email" optional>
               <input
-                value={name}
-                onChange={e => setName(e.target.value)}
-                style={{ width: '100%', padding: 12, border: '1px solid #E2DDD4', borderRadius: 10 }}
+                type="email" autoComplete="email"
+                placeholder="mohit@email.com"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                style={inpBase} onFocus={onFocus} onBlur={onBlur}
               />
-            </div>
+            </Field>
 
-            {/* State */}
-            <div style={{ marginBottom: 16 }}>
-              <label>State *</label>
-              <select
-                value={state}
-                onChange={e => {
-                  setState(e.target.value)
-                  setCity('')
-                }}
-                style={{ width: '100%', padding: 12, border: '1px solid #E2DDD4', borderRadius: 10 }}
-              >
-                <option value="">Select state</option>
-                {Object.keys(STATE_CITY_MAP).map(s => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-            </div>
+            {/* Assigned Libraries */}
+            {libraries.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ fontSize: 12, fontWeight: 600, color: '#3A4A5C', display: 'block', marginBottom: 8, letterSpacing: '.01em' }}>
+                  Assigned Libraries
+                </label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {libraries.map(lib => (
+                    <div
+                      key={lib.id}
+                      style={{
+                        border: `1.5px solid ${lib.assigned ? '#1E5CFF' : '#E2DDD4'}`,
+                        borderRadius: 9, padding: '10px 14px',
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        background: lib.assigned ? '#E8EFFE' : '#FDFCF9',
+                      }}
+                    >
+                      <span style={{ fontSize: 16 }}>📚</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: lib.assigned ? 600 : 500, color: lib.assigned ? '#1447D4' : '#3A4A5C' }}>
+                          {lib.name}
+                        </div>
+                        <div style={{ fontSize: 11, color: '#6B7689' }}>
+                          {lib.area}, {lib.city}
+                        </div>
+                      </div>
+                      {lib.assigned ? (
+                        <span style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 3,
+                          padding: '3px 9px', borderRadius: 20, fontSize: 11, fontWeight: 600,
+                          background: '#E2F5EE', color: '#065F46',
+                        }}>
+                          Assigned ✓
+                        </span>
+                      ) : (
+                        <span style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 3,
+                          padding: '3px 9px', borderRadius: 20, fontSize: 11, fontWeight: 600,
+                          background: '#EEF2F8', color: '#6E7F94', border: '1px solid #E4EAF2',
+                        }}>
+                          Not assigned
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
-            {/* City */}
-            <div style={{ marginBottom: 20 }}>
-              <label>City *</label>
-              <select
-                value={city}
-                onChange={e => setCity(e.target.value)}
-                disabled={!state}
-                style={{
-                  width: '100%',
-                  padding: 12,
-                  border: '1px solid #E2DDD4',
-                  borderRadius: 10,
-                  opacity: state ? 1 : 0.6
-                }}
-              >
-                <option value="">Select city</option>
-                {cities.map(c => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
-            </div>
+            <div style={{ height: 1, background: '#E2DDD4', margin: '20px 0' }} />
 
-            {error && <div style={{ color: 'red', marginBottom: 10 }}>{error}</div>}
-
-            <button type="submit" disabled={!valid || isPending}
-              style={{
-                width: '100%',
-                padding: 14,
-                background: valid ? '#C8A84B' : '#9AAAB8',
-                color: '#fff',
-                borderRadius: 10
+            {error && (
+              <div style={{
+                background: '#FDEAEA', border: '1px solid rgba(212,43,43,.2)',
+                borderRadius: 10, padding: '10px 14px', marginBottom: 16,
+                display: 'flex', gap: 8, alignItems: 'flex-start',
               }}>
-              {isPending ? 'Setting up...' : 'Go to scanner →'}
+                <span style={{ flexShrink: 0 }}>⚠️</span>
+                <p style={{ fontSize: 13, color: '#9B1C1C', margin: 0, lineHeight: 1.4 }}>{error}</p>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={!valid || isPending}
+              style={{
+                width: '100%', padding: '13px 0', borderRadius: 10, fontSize: 15,
+                fontWeight: 700, fontFamily: 'Syne, sans-serif', border: 'none',
+                background: valid ? ACCENT : '#C0CDD9', color: '#fff',
+                cursor: valid ? 'pointer' : 'not-allowed',
+                boxShadow: valid ? '0 4px 16px rgba(5,151,167,.28)' : 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                transition: 'all .2s',
+              }}
+              onMouseEnter={e => { if (valid) e.currentTarget.style.background = ACCENT_DARK }}
+              onMouseLeave={e => { if (valid) e.currentTarget.style.background = ACCENT }}
+            >
+              {isPending && (
+                <span style={{
+                  width: 15, height: 15, border: '2px solid rgba(255,255,255,.35)',
+                  borderTopColor: '#fff', borderRadius: '50%', display: 'inline-block',
+                  animation: 'spin .65s linear infinite', flexShrink: 0,
+                }} />
+              )}
+              {isPending ? 'Setting up your account...' : 'Start Working →'}
             </button>
 
           </form>
         </div>
+
+        <p style={{ textAlign: 'center', marginTop: 18, fontSize: 12, color: '#9AAAB8', lineHeight: 1.6 }}>
+          You can update your profile anytime from settings.
+        </p>
       </div>
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )
 }

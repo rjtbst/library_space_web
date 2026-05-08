@@ -4,6 +4,8 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getOwnerPlans, getOwnerLibraries } from '@/lib/actions/owner'
 import PlanBuilderClient from '@/components/owner/PlanBuilderClient'
 
+export const dynamic = 'force-dynamic'
+
 export default async function PlanBuilderPage() {
   const supabase = await createServerSupabaseClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -14,10 +16,5 @@ export default async function PlanBuilderPage() {
     getOwnerLibraries(),
   ])
 
-  return (
-    <PlanBuilderClient
-      plans={plans}
-      libraries={libraries}
-    />
-  )
+  return <PlanBuilderClient plans={plans} libraries={libraries} />
 }

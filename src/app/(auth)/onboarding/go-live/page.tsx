@@ -267,7 +267,7 @@ export default function GoLivePage() {
           </div>
 
           <button
-            onClick={() => router.push('/owner/dashboard')}
+            onClick={() => router.push('/dashboard')}
             style={{
               width: '100%', padding: '14px 0', borderRadius: 10, fontSize: 15,
               fontWeight: 700, fontFamily: 'Syne, sans-serif', border: 'none',

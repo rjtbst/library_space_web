@@ -35,13 +35,29 @@ export default async function OwnerDashboardLayout({
         ownerName={profile?.full_name ?? 'Owner'}
         firstLibraryId={firstLibraryId}
       />
-      {/* Main content — offset for sidebar */}
+      {/* Main content */}
       <div style={{
-        flex: 1, marginLeft: 240,
-        minHeight: '100vh', overflowX: 'hidden',
-      }}>
+        flex: 1,
+        // Desktop: offset for fixed sidebar. Mobile: no left margin, top padding for top bar
+        marginLeft: 'clamp(0px, 240px, 240px)',
+        paddingTop: 0,
+        minHeight: '100vh',
+        overflowX: 'hidden',
+      }}
+        className="dashboard-main"
+      >
         {children}
       </div>
+
+      {/* Responsive overrides via a style tag */}
+      <style>{`
+        @media (max-width: 767px) {
+          .dashboard-main {
+            margin-left: 0 !important;
+            padding-top: 56px !important;
+          }
+        }
+      `}</style>
     </div>
   )
 }

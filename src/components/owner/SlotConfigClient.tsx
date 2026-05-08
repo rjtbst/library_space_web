@@ -226,7 +226,7 @@ export default function SlotConfigClient({
           {libraries.map(lib => (
             <button
               key={lib.id}
-              onClick={() => router.push(`/owner/dashboard/slot-config?lib=${lib.id}`)}
+              onClick={() => router.push(`/dashboard/slot-config?lib=${lib.id}`)}
               style={{
                 padding: '5px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600,
                 border: `1.5px solid ${lib.id === libraryId ? ACCENT : '#E2DDD4'}`,

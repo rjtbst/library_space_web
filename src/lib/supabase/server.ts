@@ -2,6 +2,7 @@ import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import type { Database } from './types'
 
+import { cache } from 'react'
 export async function createServerSupabaseClient() {
   const cookieStore = cookies()
 
@@ -24,3 +25,12 @@ export async function createServerSupabaseClient() {
     }
   )
 }
+
+
+
+//same instance reused across all server actions
+export const getSupabaseUser = cache(async () => {
+  const supabase = await createServerSupabaseClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  return { supabase, user }
+})

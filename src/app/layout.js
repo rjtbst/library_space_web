@@ -31,7 +31,7 @@ export const metadata = {
   },
   robots: { index: true, follow: true, googleBot: { index: true, follow: true, 'max-video-preview': -1, 'max-image-preview': 'large', 'max-snippet': -1 } },
   alternates: { canonical: BASE_URL },
-  manifest: '/site.webmanifest',
+  // manifest: '/site.webmanifest',
   verification: { google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION || '' },
   applicationName: 'LibrarySpace',
   formatDetection: { telephone: false },

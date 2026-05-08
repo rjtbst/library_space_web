@@ -192,7 +192,7 @@ export default function MyLibrariesClient({
               {/* Action buttons */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
                 <button
-                  onClick={() => router.push(`/owner/dashboard/seat-manager?lib=${lib.id}`)}
+                  onClick={() => router.push(`/dashboard/seat-manager?lib=${lib.id}`)}
                   style={{
                     padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
                     border: '1.5px solid #E2DDD4', background: '#FDFCF9', color: '#3A4A5C',
@@ -202,7 +202,7 @@ export default function MyLibrariesClient({
                   Seat Manager
                 </button>
                 <button
-                  onClick={() => router.push(`/owner/dashboard/slot-config?lib=${lib.id}`)}
+                  onClick={() => router.push(`/dashboard/slot-config?lib=${lib.id}`)}
                   style={{
                     padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
                     border: '1.5px solid #E2DDD4', background: '#FDFCF9', color: '#3A4A5C',
@@ -212,7 +212,7 @@ export default function MyLibrariesClient({
                   Slot Config
                 </button>
                 <button
-                  onClick={() => router.push(`/owner/dashboard?lib=${lib.id}`)}
+                  onClick={() => router.push(`/dashboard?lib=${lib.id}`)}
                   style={{
                     padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 700,
                     border: 'none', background: ACCENT, color: '#fff',

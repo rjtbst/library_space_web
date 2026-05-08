@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react'
 import type { TodayBooking } from '@/lib/actions/owner'
 import { checkInBooking } from '@/lib/actions/owner'
+import { fmtISTTime, getISTHour } from '@/lib/ist'
 
 const ACCENT       = '#0D7C54'
 const ACCENT_LIGHT = '#D1FAE5'
@@ -10,6 +11,8 @@ const BLUE         = '#1E5CFF'
 const BLUE_LIGHT   = '#E8EFFE'
 
 const SLOTS = ['All', '6–9 AM', '9 AM–12', '12–3 PM', '3–6 PM', '6–9 PM', '9–10 PM']
+
+// Hour boundaries for each slot label — used to filter bookings by start hour
 const SLOT_HOURS: Record<string, [number, number]> = {
   '6–9 AM':   [6,  9 ],
   '9 AM–12':  [9,  12],
@@ -20,16 +23,12 @@ const SLOT_HOURS: Record<string, [number, number]> = {
 }
 
 const STATUS_STYLE: Record<string, { bg: string; color: string; label: string }> = {
-  confirmed:  { bg: BLUE_LIGHT,    color: '#1447D4',  label: 'Booked'       },
-  checked_in: { bg: ACCENT_LIGHT,  color: '#0A5E3F',  label: '✓ Checked In' },
-  held:       { bg: '#FEF3E2',     color: '#92400E',  label: 'Held'         },
-  cancelled:  { bg: '#FEE2E2',     color: '#9B1C1C',  label: 'Cancelled'    },
-  no_show:    { bg: '#FEE2E2',     color: '#9B1C1C',  label: 'No-show'      },
-  completed:  { bg: '#F0FDF4',     color: '#14532D',  label: 'Completed'    },
-}
-
-function fmtTime(iso: string) {
-  return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+  confirmed:  { bg: BLUE_LIGHT,   color: '#1447D4', label: 'Booked'       },
+  checked_in: { bg: ACCENT_LIGHT, color: '#0A5E3F', label: '✓ Checked In' },
+  held:       { bg: '#FEF3E2',    color: '#92400E', label: 'Held'         },
+  cancelled:  { bg: '#FEE2E2',    color: '#9B1C1C', label: 'Cancelled'    },
+  no_show:    { bg: '#FEE2E2',    color: '#9B1C1C', label: 'No-show'      },
+  completed:  { bg: '#F0FDF4',    color: '#14532D', label: 'Completed'    },
 }
 
 export default function BookingsClient({
@@ -39,19 +38,23 @@ export default function BookingsClient({
   libraryName: string
   libraryId:   string
 }) {
-  const [bookings, setBookings] = useState(initial)
-  const [activeSlot, setActiveSlot] = useState('All')
-  const [isPending, startTransition] = useTransition()
+  const [bookings, setBookings]       = useState(initial)
+  const [activeSlot, setActiveSlot]   = useState('All')
+  const [isPending, startTransition]  = useTransition()
 
   const today = new Date().toLocaleDateString('en-IN', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+    timeZone: 'Asia/Kolkata',
   })
 
-  const filtered = activeSlot === 'All' ? bookings : bookings.filter(b => {
-    const [sh, eh] = SLOT_HOURS[activeSlot] ?? [0, 24]
-    const h = new Date(b.start_time).getHours()
-    return h >= sh && h < eh
-  })
+  const filtered = activeSlot === 'All'
+    ? bookings
+    : bookings.filter(b => {
+        const [sh, eh] = SLOT_HOURS[activeSlot] ?? [0, 24]
+        // DB string is plain IST — getISTHour reads the hour digit directly, no Date math needed
+        const h = getISTHour(b.start_time)
+        return h >= sh && h < eh
+      })
 
   const checked = bookings.filter(b => b.status === 'checked_in').length
   const noShows = bookings.filter(b => b.status === 'no_show').length
@@ -69,6 +72,7 @@ export default function BookingsClient({
 
   return (
     <div style={{ padding: '28px 32px', maxWidth: 1000 }}>
+
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
         <div>
@@ -112,10 +116,10 @@ export default function BookingsClient({
       {/* Summary mini-cards */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
         {[
-          { value: bookings.length, label: 'Total Today' },
-          { value: bookings.filter(b => b.status === 'confirmed').length, label: 'Booked'      },
-          { value: checked,                                                label: 'Checked-in'  },
-          { value: noShows,                                                label: 'No-shows'    },
+          { value: bookings.length,                                          label: 'Total Today' },
+          { value: bookings.filter(b => b.status === 'confirmed').length,   label: 'Booked'      },
+          { value: checked,                                                  label: 'Checked-in'  },
+          { value: noShows,                                                  label: 'No-shows'    },
         ].map(({ value, label }) => (
           <div
             key={label}
@@ -180,7 +184,8 @@ export default function BookingsClient({
                         {b.plan}
                       </td>
                       <td style={{ padding: '11px 14px', color: '#6B7689', whiteSpace: 'nowrap', fontSize: 12 }}>
-                        {fmtTime(b.start_time)}–{fmtTime(b.end_time)}
+                        {/* fmtISTTime: plain IST DB string → "HH:MM AM/PM" */}
+                        {fmtISTTime(b.start_time)}–{fmtISTTime(b.end_time)}
                       </td>
                       <td style={{ padding: '11px 14px' }}>
                         <span style={{

@@ -7,37 +7,40 @@ import {
 } from '@/lib/actions/owner'
 import DashboardClient from '@/components/owner/DashboardClient'
 
-export default async function OwnerDashboardPage() {
+export const dynamic = 'force-dynamic'
+
+export default async function OwnerDashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ lib?: string }>
+}) {
+  const { lib } = await searchParams
+
   const supabase = await createServerSupabaseClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  const libraryId = await getFirstLibraryId()
+  const libraryId = lib ?? await getFirstLibraryId()
   if (!libraryId) redirect('/onboarding/add-library')
 
-  const [stats, revenue, bookings, heatmap, libraries] = await Promise.all([
+  const [stats, revenue, bookings, heatmap, libraries, libRow] = await Promise.all([
     getDashboardStats(libraryId),
     getMonthlyRevenue(libraryId),
     getTodayBookings(libraryId),
     getSlotHeatmap(libraryId),
     getOwnerLibraries(),
+    supabase.from('libraries').select('name').eq('id', libraryId).maybeSingle(),
   ])
 
-  const { data: lib } = await supabase
-    .from('libraries').select('name').eq('id', libraryId).maybeSingle()
-
   return (
-    <>
-    <h1> hello owner</h1>
     <DashboardClient
-      libraryName={lib?.name ?? 'Your Library'}
+      libraryName={libRow.data?.name ?? 'Your Library'}
       libraryId={libraryId}
       libraries={libraries}
       stats={stats}
       revenue={revenue}
       bookings={bookings}
       heatmap={heatmap}
-      />
-      </>
+    />
   )
 }

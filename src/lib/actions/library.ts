@@ -100,24 +100,6 @@ export async function createLibrary(
 /* ═══════════════════════════════════════════════════════════════
    UPLOAD LIBRARY PHOTO  (step 5 — photos)
 
-   Bucket setup — do this ONCE in the Supabase dashboard:
-   ┌─────────────────────────────────────────────────────────┐
-   │  Storage → New bucket                                   │
-   │  Name:   library-images                                 │
-   │  Public: ✅  (enables permanent public URLs)            │
-   │                                                         │
-   │  Add RLS policies on the bucket objects:               │
-   │                                                         │
-   │  INSERT — (auth.uid() IN (                              │
-   │    SELECT owner_id FROM libraries                       │
-   │    WHERE id::text = (storage.foldername(name))[1]       │
-   │  ))                                                     │
-   │                                                         │
-   │  DELETE — same condition as INSERT                      │
-   │                                                         │
-   │  SELECT — true  (public read)                           │
-   └─────────────────────────────────────────────────────────┘
-
    Why FormData?  Next.js server actions cannot receive a raw
    File/Blob — the client serialises it as multipart FormData
    and we reconstruct the ArrayBuffer on the server before

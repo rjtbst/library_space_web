@@ -297,9 +297,9 @@ function QuickActions() {
   const router = useRouter()
   const actions = [
     { icon: '📷', label: 'QR Scanner',    href: '/staff/scanner'                   },
-    { icon: '💺', label: 'Seat Manager',  href: '/owner/dashboard/seat-manager'    },
-    { icon: '⏰', label: 'Slot Config',   href: '/owner/dashboard/slot-config'     },
-    { icon: '🎯', label: 'Plan Builder',  href: '/owner/dashboard/plan-builder'    },
+    { icon: '💺', label: 'Seat Manager',  href: '/dashboard/seat-manager'    },
+    { icon: '⏰', label: 'Slot Config',   href: '/dashboard/slot-config'     },
+    { icon: '🎯', label: 'Plan Builder',  href: '/dashboard/plan-builder'    },
   ]
   return (
     <div style={{ background: '#FDFCF9', border: '1px solid #E2DDD4', borderRadius: 14, padding: '18px 20px', boxShadow: '0 2px 8px rgba(10,13,18,.04)' }}>
@@ -441,7 +441,7 @@ export default function DashboardClient({
           <LibraryPill
             libraries={libraries}
             selected={libraryId}
-            onSelect={id => router.push(`/owner/dashboard?lib=${id}`)}
+            onSelect={id => router.push(`/dashboard?lib=${id}`)}
           />
         </div>
       )}
@@ -499,7 +499,7 @@ export default function DashboardClient({
                   {s.today_bookings} total
                 </span>
                 <button
-                  onClick={() => router.push('/owner/dashboard/bookings')}
+                  onClick={() => router.push('/dashboard/bookings')}
                   style={{
                     padding: '5px 12px', borderRadius: 7, fontSize: 12, fontWeight: 600,
                     border: '1.5px solid #E2DDD4', background: '#FDFCF9',

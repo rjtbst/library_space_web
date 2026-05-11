@@ -1,7 +1,7 @@
 // src/app/(owner)/dashboard/_components/DashboardClient.tsx
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useState, useEffect, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import type { DashboardStats, MonthRevPoint, TodayBooking, SlotBand, OwnerLibrary } from '@/lib/actions/owner'
 import { checkInBooking } from '@/lib/actions/owner'
@@ -206,10 +206,11 @@ const STATUS_STYLE: Record<string, { bg: string; color: string; label: string }>
 }
 
 function BookingsTable({
-  bookings, onCheckIn,
+  bookings, onCheckIn, isMobile,
 }: {
-  bookings: TodayBooking[]
+  bookings:  TodayBooking[]
   onCheckIn: (id: string) => void
+  isMobile:  boolean
 }) {
   if (!bookings.length) {
     return (
@@ -220,6 +221,66 @@ function BookingsTable({
     )
   }
 
+  /* Mobile: card list instead of table */
+  if (isMobile) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+        {bookings.map(b => {
+          const st         = STATUS_STYLE[b.status] ?? STATUS_STYLE.confirmed
+          const canCheckIn = b.status === 'confirmed'
+          return (
+            <div key={b.id} style={{
+              padding: '12px 16px',
+              borderBottom: '1px solid #F0EDE8',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#0A0D12', marginBottom: 2 }}>
+                    {b.student}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#9AAAB8' }}>
+                    {fmtTime(b.start_time)} – {fmtTime(b.end_time)}
+                    {b.phone && ` · ${b.phone}`}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                  <span style={{
+                    padding: '2px 7px', borderRadius: 5, fontSize: 11, fontWeight: 700,
+                    background: BLUE_LIGHT, color: BLUE,
+                  }}>
+                    {b.seat_label}
+                  </span>
+                  <span style={{
+                    padding: '2px 8px', borderRadius: 20, fontSize: 10, fontWeight: 600,
+                    background: st.bg, color: st.color,
+                  }}>
+                    {st.label}
+                  </span>
+                </div>
+              </div>
+              {canCheckIn && (
+                <button
+                  onClick={() => onCheckIn(b.id)}
+                  style={{
+                    width: '100%', padding: '7px 0', borderRadius: 8,
+                    fontSize: 12, fontWeight: 600,
+                    background: ACCENT_LIGHT, color: ACCENT,
+                    border: `1px solid rgba(13,124,84,.2)`,
+                    cursor: 'pointer', fontFamily: 'DM Sans, sans-serif',
+                    marginTop: 4,
+                  }}
+                >
+                  ✓ Check-in
+                </button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+
+  /* Desktop: original table */
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -296,7 +357,7 @@ function BookingsTable({
 function QuickActions() {
   const router = useRouter()
   const actions = [
-    { icon: '📷', label: 'QR Scanner',    href: '/staff/scanner'                   },
+    { icon: '📷', label: 'QR Scanner',    href: '/staff/scanner'              },
     { icon: '💺', label: 'Seat Manager',  href: '/dashboard/seat-manager'    },
     { icon: '⏰', label: 'Slot Config',   href: '/dashboard/slot-config'     },
     { icon: '🎯', label: 'Plan Builder',  href: '/dashboard/plan-builder'    },
@@ -385,7 +446,15 @@ export default function DashboardClient({
 }) {
   const router = useRouter()
   const [localBookings, setLocalBookings] = useState(bookings)
-  const [isPending, startTransition] = useTransition()
+  const [isPending, startTransition]      = useTransition()
+  const [isMobile, setIsMobile]           = useState(false)
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768)
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [])
 
   const today = new Date().toLocaleDateString('en-IN', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
@@ -409,14 +478,28 @@ export default function DashboardClient({
   }
 
   return (
-    <div style={{ padding: '28px 32px', maxWidth: 1200 }}>
+    <div style={{
+      padding:   isMobile ? '16px 14px' : '28px 32px',
+      maxWidth:  1200,
+    }}>
       {/* Page header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
+      <div style={{
+        display:        'flex',
+        alignItems:     isMobile ? 'flex-start' : 'flex-start',
+        justifyContent: 'space-between',
+        marginBottom:   isMobile ? 16 : 24,
+        flexWrap:       'wrap',
+        gap:            10,
+      }}>
         <div>
-          <h1 style={{ fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 24, color: '#0A0D12', letterSpacing: '-0.03em', margin: 0, marginBottom: 4 }}>
+          <h1 style={{
+            fontFamily: 'Syne, sans-serif', fontWeight: 800,
+            fontSize: isMobile ? 20 : 24,
+            color: '#0A0D12', letterSpacing: '-0.03em', margin: 0, marginBottom: 4,
+          }}>
             Owner Dashboard
           </h1>
-          <div style={{ fontSize: 13, color: '#6B7689' }}>
+          <div style={{ fontSize: isMobile ? 12 : 13, color: '#6B7689' }}>
             {libraryName} · {today}
           </div>
         </div>
@@ -424,7 +507,8 @@ export default function DashboardClient({
           <button
             onClick={() => router.push('/onboarding/add-library')}
             style={{
-              padding: '9px 16px', borderRadius: 9, fontSize: 13, fontWeight: 700,
+              padding: isMobile ? '8px 12px' : '9px 16px',
+              borderRadius: 9, fontSize: isMobile ? 12 : 13, fontWeight: 700,
               background: ACCENT, color: '#fff', border: 'none',
               cursor: 'pointer', fontFamily: 'Syne, sans-serif',
               boxShadow: '0 2px 10px rgba(13,124,84,.25)',
@@ -435,9 +519,9 @@ export default function DashboardClient({
         </div>
       </div>
 
-      {/* Library selector (multi-library owners) */}
+      {/* Library selector */}
       {libraries.length > 1 && (
-        <div style={{ marginBottom: 20 }}>
+        <div style={{ marginBottom: isMobile ? 14 : 20 }}>
           <LibraryPill
             libraries={libraries}
             selected={libraryId}
@@ -446,8 +530,13 @@ export default function DashboardClient({
         </div>
       )}
 
-      {/* Stats row */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
+      {/* Stats row — 2×2 on mobile, 4-up on desktop */}
+      <div style={{
+        display:               'grid',
+        gridTemplateColumns:   isMobile ? '1fr 1fr' : 'repeat(4, 1fr)',
+        gap:                   isMobile ? 8 : 12,
+        marginBottom:          isMobile ? 14 : 20,
+      }}>
         <StatCard
           icon="₹"
           label="Today's Revenue"
@@ -478,16 +567,29 @@ export default function DashboardClient({
         />
       </div>
 
-      {/* Two-column layout */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
+      {/* Two-column layout — stacks on mobile */}
+      <div style={{
+        display:             'grid',
+        gridTemplateColumns: isMobile ? '1fr' : '1fr 320px',
+        gap:                 isMobile ? 12 : 16,
+        alignItems:          'start',
+      }}>
         {/* Left column */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Revenue chart */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 12 : 16 }}>
           <RevenueChart data={revenue} />
 
           {/* Today's bookings */}
-          <div style={{ background: '#FDFCF9', border: '1px solid #E2DDD4', borderRadius: 14, overflow: 'hidden', boxShadow: '0 2px 8px rgba(10,13,18,.04)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #E2DDD4' }}>
+          <div style={{
+            background: '#FDFCF9', border: '1px solid #E2DDD4',
+            borderRadius: 14, overflow: 'hidden',
+            boxShadow: '0 2px 8px rgba(10,13,18,.04)',
+          }}>
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: isMobile ? '12px 14px' : '16px 20px',
+              borderBottom: '1px solid #E2DDD4',
+              flexWrap: 'wrap', gap: 8,
+            }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: '#0A0D12' }}>
                 Today's Bookings
               </div>
@@ -511,13 +613,17 @@ export default function DashboardClient({
               </div>
             </div>
             <div style={{ padding: '0 0 4px' }}>
-              <BookingsTable bookings={localBookings.slice(0, 6)} onCheckIn={handleCheckIn} />
+              <BookingsTable
+                bookings={localBookings.slice(0, 6)}
+                onCheckIn={handleCheckIn}
+                isMobile={isMobile}
+              />
             </div>
           </div>
         </div>
 
-        {/* Right column */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Right column — renders below on mobile */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 12 : 16 }}>
           <OccupancyDonut stats={s} />
           <SlotHeatmap data={heatmap} />
           <QuickActions />

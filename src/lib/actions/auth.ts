@@ -37,7 +37,7 @@ const roleSchema = z.enum(['student', 'owner', 'staff'])
 // ─── Helper ───────────────────────────────────────────────────────────────────
 function dashboardForRole(role: UserRole | null | undefined): string {
   if (role === 'owner') return '/dashboard'
-  if (role === 'staff') return '/scanner'
+  if (role === 'staff') return '/staff'
   return '/student/home'
 }
 

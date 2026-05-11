@@ -55,7 +55,7 @@ export async function GET(request: NextRequest) {
 
   switch (userRow.role) {
     case 'owner':  return NextResponse.redirect(`${origin}/dashboard`)
-    case 'staff':  return NextResponse.redirect(`${origin}/scanner`)
+    case 'staff':  return NextResponse.redirect(`${origin}/staff`)
     default:       return NextResponse.redirect(`${origin}/student/home`)
   }
 }

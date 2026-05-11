@@ -15,6 +15,7 @@ const NAV = [
   { href: '/dashboard/seat-manager', icon: '💺', label: 'Seat Manager'    },
   { href: '/dashboard/slot-config',  icon: '⏰', label: 'Slot Config'     },
   { href: '/dashboard/plan-builder', icon: '🎯', label: 'Plan Builder'    },
+  { href: '/dashboard/staff',        icon: '👥', label: 'Staff'           },
 ]
 
 export default function OwnerSidebar({

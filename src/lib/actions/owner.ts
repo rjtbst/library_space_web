@@ -574,7 +574,12 @@ export async function manualBookSeat(
   // Validate — use '+05:30' suffix so arithmetic is timezone-safe on the server
   if (!startTime || !endTime) return { success: false, error: 'Start and end time are required' }
   const rangeCheck = validateISTRange(startTime, endTime, 24)
-  // if (!rangeCheck.ok) return { success: false, error: rangeCheck.error }
+ if (rangeCheck.ok === false) {
+  return {
+    success: false,
+    error: rangeCheck.error,
+  }
+}
 
   // Ownership + seat validity in parallel
   const [libRes, seatRes] = await Promise.all([

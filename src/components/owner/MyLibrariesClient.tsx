@@ -1,15 +1,16 @@
-// src/app/(owner)/dashboard/my-libraries/_components/MyLibrariesClient.tsx
 'use client'
-
-import { useState, useTransition } from 'react'
+import { useState, useTransition, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import type { OwnerLibrary } from '@/lib/actions/owner'
 import { toggleLibraryActive } from '@/lib/actions/owner'
-
-const ACCENT       = '#0D7C54'
-const ACCENT_LIGHT = '#D1FAE5'
-const BLUE         = '#1E5CFF'
-const BLUE_LIGHT   = '#E8EFFE'
+import {
+  ACCENT, ACCENT_LIGHT, BLUE, BLUE_LIGHT,
+  BORDER, BG_CARD, SHADOW_SM, FONT_DISPLAY, FONT_BODY,
+  TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED,
+} from '@/lib/constants/theme'
+import { fmtCurrency } from '@/lib/utils/format'
+import { Toggle, Card, PageHeader, EmptyState, Toast } from '@/components/owner/ui'
+import { useToast } from '@/hooks/useToast'
 
 const GRADIENTS = [
   'linear-gradient(135deg,#E0E8FF,#C7D4F7)',
@@ -20,91 +21,83 @@ const GRADIENTS = [
 ]
 const EMOJIS = ['📚', '🌿', '📖', '🏛️', '📗']
 
-function fmtCurrency(n: number) {
-  if (n >= 1000) return `₹${(n / 1000).toFixed(1)}k`
-  return `₹${n}`
+const NAV_BTN_STYLE: React.CSSProperties = {
+  padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+  border: `1.5px solid ${BORDER}`, background: BG_CARD, color: '#3A4A5C',
+  cursor: 'pointer', fontFamily: FONT_BODY,
 }
 
-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      onClick={() => onChange(!on)}
-      style={{
-        width: 36, height: 20, borderRadius: 10, border: 'none',
-        background: on ? ACCENT : '#C8D4C8', cursor: 'pointer',
-        position: 'relative', transition: 'background .2s', padding: 0,
-        flexShrink: 0,
-      }}
-    >
-      <div style={{
-        width: 14, height: 14, borderRadius: '50%', background: '#fff',
-        position: 'absolute', top: 3, left: on ? 19 : 3,
-        transition: 'left .2s', boxShadow: '0 1px 3px rgba(0,0,0,.15)',
-      }} />
-    </button>
-  )
-}
-
-export default function MyLibrariesClient({
-  libraries: initial, totalRev, totalMembers, avgOcc,
-}: {
-  libraries:     OwnerLibrary[]
-  totalRev:      number
-  totalMembers:  number
-  avgOcc:        number
-}) {
+export default function MyLibrariesClient({ libraries: initial }: { libraries: OwnerLibrary[] }) {
   const router = useRouter()
-  const [libraries, setLibraries] = useState(initial)
+  const { toast, showToast } = useToast()
+  const [libraries, setLibraries]    = useState(initial)
   const [isPending, startTransition] = useTransition()
 
-  const handleToggle = (libId: string, newVal: boolean) => {
+  // ← summary stats computed here (moved from page.tsx)
+  const summary = useMemo(() => ({
+    totalRev:     libraries.reduce((s, l) => s + l.month_revenue, 0),
+    totalMembers: libraries.reduce((s, l) => s + l.member_count,  0),
+    avgOcc: libraries.length
+      ? Math.round(
+          libraries.reduce((s, l) => s + (l.total_seats ? l.active_seats / l.total_seats : 0), 0)
+          / libraries.length * 100
+        )
+      : 0,
+  }), [libraries])
+
+  const handleToggle = useCallback((libId: string, newVal: boolean) => {
     startTransition(async () => {
       const res = await toggleLibraryActive(libId, newVal)
       if (res.success) {
         setLibraries(prev => prev.map(l => l.id === libId ? { ...l, is_active: newVal } : l))
+        showToast(`Library ${newVal ? 'activated' : 'paused'}`)
       }
     })
-  }
+  }, [showToast])
+
+  // Trigger progress bar + navigate — used for all action buttons
+  const navigate = useCallback((href: string) => {
+    ;(window as any).__startNavProgress?.()
+    router.push(href)
+  }, [router])
 
   return (
     <div style={{ padding: '28px 32px', maxWidth: 1000 }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h1 style={{ fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 24, color: '#0A0D12', letterSpacing: '-0.03em', margin: 0, marginBottom: 4 }}>
-            My Libraries
-          </h1>
-          <div style={{ fontSize: 13, color: '#6B7689' }}>All your registered libraries</div>
-        </div>
-        <button
-          onClick={() => router.push('/onboarding/add-library')}
-          style={{
-            padding: '9px 16px', borderRadius: 9, fontSize: 13, fontWeight: 700,
-            background: ACCENT, color: '#fff', border: 'none', cursor: 'pointer',
-            fontFamily: 'Syne, sans-serif', boxShadow: '0 2px 10px rgba(13,124,84,.25)',
-          }}
-        >
-          + Add New Library
-        </button>
-      </div>
+      <Toast toast={toast} />
+
+      <PageHeader
+        title="My Libraries"
+        subtitle="All your registered libraries"
+        action={
+          <button
+            onClick={() => navigate('/onboarding/add-library')}
+            style={{
+              padding: '9px 16px', borderRadius: 9, fontSize: 13, fontWeight: 700,
+              background: ACCENT, color: '#fff', border: 'none', cursor: 'pointer',
+              fontFamily: FONT_DISPLAY, boxShadow: '0 2px 10px rgba(13,124,84,.25)',
+            }}
+          >
+            + Add New Library
+          </button>
+        }
+      />
 
       {/* Summary stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
         {[
-          { label: 'Libraries',     value: String(libraries.length) },
-          { label: 'This Month',    value: fmtCurrency(totalRev)    },
-          { label: 'Members',       value: String(totalMembers)      },
-          { label: 'Avg Occupancy', value: `${avgOcc}%`              },
+          { label: 'Libraries',     value: String(libraries.length)          },
+          { label: 'This Month',    value: fmtCurrency(summary.totalRev)     },
+          { label: 'Members',       value: String(summary.totalMembers)       },
+          { label: 'Avg Occupancy', value: `${summary.avgOcc}%`              },
         ].map(({ label, value }) => (
           <div key={label} style={{
-            background: '#FDFCF9', border: '1px solid #E2DDD4',
-            borderRadius: 12, padding: '14px 16px',
-            boxShadow: '0 2px 6px rgba(10,13,18,.04)',
+            background: BG_CARD, border: `1px solid ${BORDER}`,
+            borderRadius: 12, padding: '14px 16px', boxShadow: SHADOW_SM,
           }}>
-            <div style={{ fontSize: 10, color: '#9AAAB8', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>
+            <div style={{ fontSize: 10, color: TEXT_MUTED, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>
               {label}
             </div>
-            <div style={{ fontSize: 22, fontWeight: 800, fontFamily: 'Syne, sans-serif', color: '#0A0D12' }}>
+            <div style={{ fontSize: 22, fontWeight: 800, fontFamily: FONT_DISPLAY, color: TEXT_PRIMARY }}>
               {value}
             </div>
           </div>
@@ -114,42 +107,35 @@ export default function MyLibrariesClient({
       {/* Library cards */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {libraries.length === 0 ? (
-          <div style={{
-            textAlign: 'center', padding: '60px 0',
-            background: '#FDFCF9', borderRadius: 14, border: '1px solid #E2DDD4',
-          }}>
-            <div style={{ fontSize: 48, marginBottom: 12 }}>🏛️</div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: '#0A0D12', marginBottom: 6 }}>No libraries yet</div>
-            <div style={{ fontSize: 13, color: '#6B7689', marginBottom: 20 }}>Add your first library to get started</div>
-            <button
-              onClick={() => router.push('/onboarding/add-library')}
-              style={{
-                padding: '10px 20px', borderRadius: 9, fontSize: 14, fontWeight: 700,
-                background: ACCENT, color: '#fff', border: 'none', cursor: 'pointer',
-                fontFamily: 'Syne, sans-serif',
-              }}
-            >
-              + Add Library
-            </button>
-          </div>
+          <Card>
+            <EmptyState
+              icon="🏛️"
+              title="No libraries yet"
+              subtitle="Add your first library to get started"
+              action={
+                <button
+                  onClick={() => navigate('/onboarding/add-library')}
+                  style={{
+                    padding: '10px 20px', borderRadius: 9, fontSize: 14, fontWeight: 700,
+                    background: ACCENT, color: '#fff', border: 'none', cursor: 'pointer',
+                    fontFamily: FONT_DISPLAY,
+                  }}
+                >
+                  + Add Library
+                </button>
+              }
+            />
+          </Card>
         ) : libraries.map((lib, idx) => (
-          <div
-            key={lib.id}
-            style={{
-              background: '#FDFCF9', border: '1px solid #E2DDD4', borderRadius: 14,
-              padding: '18px 20px', boxShadow: '0 2px 8px rgba(10,13,18,.04)',
-              transition: 'box-shadow .15s',
-            }}
-            onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 6px 24px rgba(10,13,18,.10)')}
-            onMouseLeave={e => (e.currentTarget.style.boxShadow = '0 2px 8px rgba(10,13,18,.04)')}
-          >
+          <Card key={lib.id} hoverable padding="18px 20px">
             <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-              {/* Icon / cover */}
+              {/* Cover / icon */}
               <div style={{
                 width: 64, height: 64, borderRadius: 12, flexShrink: 0,
-                background: lib.cover_url ? `url(${lib.cover_url}) center/cover` : GRADIENTS[idx % GRADIENTS.length],
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 28,
+                background: lib.cover_url
+                  ? `url(${lib.cover_url}) center/cover`
+                  : GRADIENTS[idx % GRADIENTS.length],
+                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28,
               }}>
                 {!lib.cover_url && EMOJIS[idx % EMOJIS.length]}
               </div>
@@ -157,73 +143,62 @@ export default function MyLibrariesClient({
               {/* Info */}
               <div style={{ flex: 1, minWidth: 200 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
-                  <span style={{ fontSize: 16, fontWeight: 700, color: '#0A0D12' }}>{lib.name}</span>
+                  <span style={{ fontSize: 16, fontWeight: 700, color: TEXT_PRIMARY }}>{lib.name}</span>
                   <span style={{
                     padding: '2px 9px', borderRadius: 20, fontSize: 10, fontWeight: 700,
                     background: lib.is_active ? ACCENT_LIGHT : '#F0EDE8',
-                    color: lib.is_active ? ACCENT : '#9AAAB8',
+                    color: lib.is_active ? ACCENT : TEXT_MUTED,
                   }}>
                     {lib.is_active ? '● Live' : '○ Inactive'}
                   </span>
                   <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 11, color: '#9AAAB8' }}>{lib.is_active ? 'Active' : 'Paused'}</span>
-                    <Toggle on={lib.is_active} onChange={v => handleToggle(lib.id, v)} />
+                    <span style={{ fontSize: 11, color: TEXT_MUTED }}>{lib.is_active ? 'Active' : 'Paused'}</span>
+                    <Toggle
+                      on={lib.is_active}
+                      onChange={v => handleToggle(lib.id, v)}
+                      disabled={isPending}
+                    />
                   </div>
                 </div>
-                <div style={{ fontSize: 12, color: '#6B7689', marginBottom: 12 }}>
+                <div style={{ fontSize: 12, color: TEXT_SECONDARY, marginBottom: 12 }}>
                   📍 {[lib.area, lib.city].filter(Boolean).join(', ')}
                 </div>
-
                 <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
                   {[
-                    { label: 'Seats',          value: `${lib.active_seats}/${lib.total_seats}` },
-                    { label: 'Revenue/month',  value: fmtCurrency(lib.month_revenue), color: BLUE },
-                    { label: 'Members',        value: String(lib.member_count) },
-                    { label: 'Staff',          value: String(lib.staff_count)  },
+                    { label: 'Seats',         value: `${lib.active_seats}/${lib.total_seats}` },
+                    { label: 'Revenue/month', value: fmtCurrency(lib.month_revenue), color: BLUE },
+                    { label: 'Members',       value: String(lib.member_count) },
+                    { label: 'Staff',         value: String(lib.staff_count)  },
                   ].map(({ label, value, color }) => (
                     <div key={label}>
-                      <div style={{ fontSize: 10, color: '#9AAAB8', textTransform: 'uppercase', letterSpacing: '.04em' }}>{label}</div>
-                      <div style={{ fontSize: 15, fontWeight: 700, color: color ?? '#0A0D12' }}>{value}</div>
+                      <div style={{ fontSize: 10, color: TEXT_MUTED, textTransform: 'uppercase', letterSpacing: '.04em' }}>{label}</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: color ?? TEXT_PRIMARY }}>{value}</div>
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* Action buttons */}
+              {/* Action buttons — all trigger progress bar */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
-                <button
-                  onClick={() => router.push(`/dashboard/seat-manager?lib=${lib.id}`)}
-                  style={{
-                    padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
-                    border: '1.5px solid #E2DDD4', background: '#FDFCF9', color: '#3A4A5C',
-                    cursor: 'pointer', fontFamily: 'DM Sans, sans-serif',
-                  }}
-                >
+                <button onClick={() => navigate(`/dashboard/seat-manager?lib=${lib.id}`)} style={NAV_BTN_STYLE}>
                   Seat Manager
                 </button>
-                <button
-                  onClick={() => router.push(`/dashboard/slot-config?lib=${lib.id}`)}
-                  style={{
-                    padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
-                    border: '1.5px solid #E2DDD4', background: '#FDFCF9', color: '#3A4A5C',
-                    cursor: 'pointer', fontFamily: 'DM Sans, sans-serif',
-                  }}
-                >
+                <button onClick={() => navigate(`/dashboard/slot-config?lib=${lib.id}`)} style={NAV_BTN_STYLE}>
                   Slot Config
                 </button>
                 <button
-                  onClick={() => router.push(`/dashboard?lib=${lib.id}`)}
+                  onClick={() => navigate(`/dashboard?lib=${lib.id}`)}
                   style={{
                     padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 700,
                     border: 'none', background: ACCENT, color: '#fff',
-                    cursor: 'pointer', fontFamily: 'Syne, sans-serif',
+                    cursor: 'pointer', fontFamily: FONT_DISPLAY,
                   }}
                 >
                   Dashboard →
                 </button>
               </div>
             </div>
-          </div>
+          </Card>
         ))}
       </div>
     </div>

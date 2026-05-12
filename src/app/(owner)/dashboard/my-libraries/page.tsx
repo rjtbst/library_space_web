@@ -4,30 +4,16 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { getOwnerLibraries } from '@/lib/actions/owner'
 import MyLibrariesClient from '@/components/owner/MyLibrariesClient'
 
-export const dynamic = 'force-dynamic'  // ← THIS was missing, causing stale data
+export const dynamic = 'force-dynamic'
 
 export default async function MyLibrariesPage() {
   const supabase = await createServerSupabaseClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
+  // Fresh fetch (force-dynamic ensures no caching)
   const libraries = await getOwnerLibraries()
 
-  const totalRev     = libraries.reduce((s, l) => s + l.month_revenue, 0)
-  const totalMembers = libraries.reduce((s, l) => s + l.member_count, 0)
-  const avgOcc       = libraries.length
-    ? Math.round(
-        libraries.reduce((s, l) => s + (l.total_seats ? l.active_seats / l.total_seats : 0), 0)
-        / libraries.length * 100
-      )
-    : 0
-
-  return (
-    <MyLibrariesClient
-      libraries={libraries}
-      totalRev={totalRev}
-      totalMembers={totalMembers}
-      avgOcc={avgOcc}
-    />
-  )
+  // ← No more totalRev/totalMembers/avgOcc here — computed via useMemo in client
+  return <MyLibrariesClient libraries={libraries} />
 }

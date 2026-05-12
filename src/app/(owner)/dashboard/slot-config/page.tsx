@@ -6,13 +6,8 @@ import SlotConfigClient from '@/components/owner/SlotConfigClient'
 
 export const dynamic = 'force-dynamic'
 
-export default async function SlotConfigPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ lib?: string }>
-}) {
+export default async function SlotConfigPage({ searchParams }: { searchParams: Promise<{ lib?: string }> }) {
   const { lib } = await searchParams
-
   const supabase = await createServerSupabaseClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
@@ -20,19 +15,23 @@ export default async function SlotConfigPage({
   const libraryId = lib ?? await getFirstLibraryId()
   if (!libraryId) redirect('/onboarding/add-library')
 
-  const [slots, libraries] = await Promise.all([
+  // ← ONE query instead of two (getOwnerLibraries removed — lives in context)
+  const [slots, libRow] = await Promise.all([
     getSlotConfigs(libraryId),
-    getOwnerLibraries(),
+    // Get just this library's name efficiently
+    (async () => {
+      const { createServerSupabaseClient: sc } = await import('@/lib/supabase/server')
+      const db = await sc()
+      return db.from('libraries').select('name').eq('id', libraryId).maybeSingle()
+    })(),
   ])
-
-  const libMeta = libraries.find(l => l.id === libraryId)
 
   return (
     <SlotConfigClient
       slots={slots}
       libraryId={libraryId}
-      libraryName={libMeta?.name ?? ''}
-      libraries={libraries}
+      libraryName={libRow.data?.name ?? ''}
+      // ← libraries prop removed — component reads from useOwner()
     />
   )
 }

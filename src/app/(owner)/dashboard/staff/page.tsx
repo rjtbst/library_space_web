@@ -1,7 +1,7 @@
 // src/app/(owner)/dashboard/staff/page.tsx
 import { redirect } from 'next/navigation'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { getOwnerLibraries } from '@/lib/actions/owner'
+// ← getOwnerLibraries REMOVED
 import { getOwnerStaff, getPendingRequests } from '@/lib/actions/owner-staff'
 import StaffManagementClient from '@/components/owner/Staffmanagementclient'
 
@@ -12,19 +12,18 @@ export default async function StaffManagementPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/auth/login')
 
-  const [libraries, staffMembers, pendingRequests] = await Promise.all([
-    getOwnerLibraries(),
+  const [staffMembers, pendingRequests] = await Promise.all([
     getOwnerStaff(),
     getPendingRequests(),
   ])
 
-  if (!libraries.length) redirect('/onboarding/add-library')
+  // libraries check moved to layout — if owner has no libraries they'd never reach this page
 
   return (
     <StaffManagementClient
-      libraries={libraries}
       staffMembers={staffMembers}
       pendingRequests={pendingRequests}
+      // ← libraries prop removed — component reads from useOwner()
     />
   )
 }

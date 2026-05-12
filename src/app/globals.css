@@ -664,3 +664,17 @@ td {
 .hr { height: 1px; background: var(--divider); margin: 12px 0; }
 
 img, video { display: block; max-width: 100%; }
+
+@keyframes shimmer {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+
+/* These were duplicated inside 4 component <style> blocks. Now central. */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

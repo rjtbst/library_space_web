@@ -3,7 +3,8 @@ import { redirect } from 'next/navigation'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import {
   getFirstLibraryId, getDashboardStats, getMonthlyRevenue,
-  getTodayBookings, getSlotHeatmap, getOwnerLibraries,
+  getTodayBookings, getSlotHeatmap,
+  // getOwnerLibraries  ← REMOVED, already in layout context
 } from '@/lib/actions/owner'
 import DashboardClient from '@/components/owner/DashboardClient'
 
@@ -16,27 +17,25 @@ export default async function OwnerDashboardPage({
 }) {
   const { lib } = await searchParams
 
-  const supabase = await createServerSupabaseClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/auth/login')
-
+  // Layout already verified auth — we only need libraryId resolution here
   const libraryId = lib ?? await getFirstLibraryId()
   if (!libraryId) redirect('/onboarding/add-library')
 
-  const [stats, revenue, bookings, heatmap, libraries, libRow] = await Promise.all([
+  // All 5 fetches in parallel, getOwnerLibraries() gone
+  const [stats, revenue, bookings, heatmap, libRow] = await Promise.all([
     getDashboardStats(libraryId),
     getMonthlyRevenue(libraryId),
     getTodayBookings(libraryId),
     getSlotHeatmap(libraryId),
-    getOwnerLibraries(),
-    supabase.from('libraries').select('name').eq('id', libraryId).maybeSingle(),
+    createServerSupabaseClient().then(sb =>
+      sb.from('libraries').select('name').eq('id', libraryId).maybeSingle()
+    ),
   ])
 
   return (
     <DashboardClient
       libraryName={libRow.data?.name ?? 'Your Library'}
       libraryId={libraryId}
-      libraries={libraries}
       stats={stats}
       revenue={revenue}
       bookings={bookings}

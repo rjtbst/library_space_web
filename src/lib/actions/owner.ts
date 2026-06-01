@@ -1,5 +1,6 @@
 'use server'
 
+import { cache } from 'react'                          // ← NEW: per-request dedup
 import { revalidatePath } from 'next/cache'
 import { createServerSupabaseClient, getSupabaseUser } from '@/lib/supabase/server'
 import type { ActionResult } from '@/lib/actions/auth'
@@ -163,7 +164,6 @@ export async function getDashboardStats(libraryId: string): Promise<DashboardSta
         .gte('start_time', today.start).lte('start_time', today.end),
       supabase.from('bookings').select('id').eq('library_id', libraryId)
         .gte('start_time', yesterday.start).lte('start_time', yesterday.end),
-      // Live occupancy: bookings whose window contains right now
       supabase.from('bookings').select('id, status').eq('library_id', libraryId)
         .lte('start_time', now).gte('end_time', now)
         .in('status', ['confirmed', 'checked_in', 'held'] as never[]),
@@ -244,8 +244,8 @@ export type TodayBooking = {
   student: string
   phone: string | null
   plan: string | null
-  start_time: string  // plain IST string — use fmtISTTime() on client for display
-  end_time: string    // plain IST string — use fmtISTTime() on client for display
+  start_time: string
+  end_time: string
   status: string
   booking_mode: 'online' | 'offline'
 }
@@ -296,7 +296,6 @@ export async function getTodayBookings(libraryId: string): Promise<TodayBooking[
       const isGuest  = !b.user_id || !b.users
       const name     = isGuest ? (b.guest_name ?? 'Walk-in') : (b.users?.full_name ?? 'Unknown')
       const rawPhone = isGuest ? b.guest_phone : b.users?.phone
-      // Mask middle digits: +91 XX•••• XXXX
       const phone    = rawPhone
         ? String(rawPhone).replace(/^(\+?91)?(\d{2})(\d{4})(\d{4})$/, '+91 $2•••• $4')
         : null
@@ -332,7 +331,7 @@ export async function getSlotHeatmap(libraryId: string): Promise<SlotBand[]> {
     const { supabase, user } = await getSupabaseUser()
     if (!user) return []
 
-    const since = pastMonthsStartIST(1)  // last ~30 days
+    const since = pastMonthsStartIST(1)
 
     const { data, error } = await supabase
       .from('bookings')
@@ -355,7 +354,7 @@ export async function getSlotHeatmap(libraryId: string): Promise<SlotBand[]> {
     const counts = bands.map((b) => ({
       ...b,
       count: data?.filter((bk) => {
-        const h = getISTHour(bk.start_time)  // DB string is already IST — just read the hour
+        const h = getISTHour(bk.start_time)
         return h >= b.start_h && h < b.end_h
       }).length ?? 0,
     }))
@@ -397,16 +396,13 @@ export async function checkInBooking(bookingId: string): Promise<ActionResult> {
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SEAT MANAGER
-   ─────────────────────────────────────────────────────────────────────────
-   live_status is computed server-side by comparing booking windows to nowIST().
-   Both stored values and nowIST() are plain IST strings → correct comparison.
 ═══════════════════════════════════════════════════════════════════════════ */
 export type ActiveBooking = {
   id:           string
-  guest_name:   string | null   // null for members
+  guest_name:   string | null
   guest_phone:  string | null
-  start_time:   string          // plain IST string — use fmtIST() on client
-  end_time:     string          // plain IST string — use fmtIST() on client
+  start_time:   string
+  end_time:     string
   booking_mode: 'online' | 'offline'
   status:       string
 }
@@ -417,7 +413,7 @@ export type SeatRow = {
   column_number:   number
   is_active:       boolean
   live_status:     'free' | 'booked' | 'held' | 'inactive'
-  current_booking?: ActiveBooking  // present when live_status is 'booked' or 'held'
+  current_booking?: ActiveBooking
 }
 
 export async function getSeatLayout(libraryId: string): Promise<SeatRow[]> {
@@ -425,7 +421,7 @@ export async function getSeatLayout(libraryId: string): Promise<SeatRow[]> {
     const { supabase, user } = await getSupabaseUser()
     if (!user) return []
 
-    const now = nowIST()  // plain IST string — compare directly with DB values
+    const now = nowIST()
 
     const [seatsRes, bookingsRes] = await Promise.all([
       supabase
@@ -434,8 +430,6 @@ export async function getSeatLayout(libraryId: string): Promise<SeatRow[]> {
         .eq('library_id', libraryId)
         .order('row_label')
         .order('column_number'),
-
-      // Active bookings: window contains right now (both sides are plain IST)
       supabase
         .from('bookings')
         .select(`
@@ -452,7 +446,6 @@ export async function getSeatLayout(libraryId: string): Promise<SeatRow[]> {
 
     if (!seatsRes.data?.length) return []
 
-    // seat_id → first active booking (a seat can't legitimately have >1)
     const bookingBySeat = new Map<string, any>()
     for (const b of bookingsRes.data ?? []) {
       if (!bookingBySeat.has(b.seat_id)) bookingBySeat.set(b.seat_id, b)
@@ -555,8 +548,8 @@ export type ManualBookInput = {
   libraryId:   string
   userName:    string
   userPhone:   string
-  startTime:   string              // plain IST string — "YYYY-MM-DDTHH:mm:ss"
-  endTime:     string              // plain IST string — "YYYY-MM-DDTHH:mm:ss"
+  startTime:   string
+  endTime:     string
   bookingMode: 'online' | 'offline'
   amountPaid:  number
   paymentMode: 'cash' | 'upi' | 'other'
@@ -571,17 +564,12 @@ export async function manualBookSeat(
 
   const { seatId, libraryId, userName, userPhone, startTime, endTime, bookingMode, amountPaid, paymentMode, paymentNote } = input
 
-  // Validate — use '+05:30' suffix so arithmetic is timezone-safe on the server
   if (!startTime || !endTime) return { success: false, error: 'Start and end time are required' }
   const rangeCheck = validateISTRange(startTime, endTime, 24)
- if (rangeCheck.ok === false) {
-  return {
-    success: false,
-    error: rangeCheck.error,
+  if (rangeCheck.ok === false) {
+    return { success: false, error: rangeCheck.error }
   }
-}
 
-  // Ownership + seat validity in parallel
   const [libRes, seatRes] = await Promise.all([
     supabase.from('libraries').select('owner_id').eq('id', libraryId).maybeSingle(),
     supabase.from('seats').select('id, is_active, library_id').eq('id', seatId).maybeSingle(),
@@ -591,7 +579,6 @@ export async function manualBookSeat(
   if (!seatRes.data || seatRes.data.library_id !== libraryId) return { success: false, error: 'Seat not found in this library' }
   if (!seatRes.data.is_active) return { success: false, error: 'Seat is inactive — activate it first' }
 
-  // Overlap check: any active booking whose window overlaps [startTime, endTime)
   const { data: overlap } = await supabase
     .from('bookings')
     .select('id, start_time, end_time')
@@ -651,7 +638,7 @@ export async function manualBookSeat(
 export async function extendBooking(
   bookingId:  string,
   libraryId:  string,
-  newEndTime: string, // plain IST string
+  newEndTime: string,
 ): Promise<ActionResult> {
   const { supabase, user } = await getSupabaseUser()
   if (!user) return { success: false, error: 'Not authenticated' }
@@ -671,7 +658,6 @@ export async function extendBooking(
   if (!['confirmed', 'checked_in'].includes(booking.status as string))
     return { success: false, error: 'Can only extend confirmed or checked-in bookings' }
 
-  // Arithmetic uses '+05:30' so it's timezone-safe on the server
   const newEndMs     = new Date(newEndTime       + '+05:30').getTime()
   const currentEndMs = new Date(booking.end_time + '+05:30').getTime()
   const startMs      = new Date(booking.start_time + '+05:30').getTime()
@@ -681,7 +667,6 @@ export async function extendBooking(
   if (newEndMs - startMs > 24 * 3_600_000)
     return { success: false, error: 'Total booking duration cannot exceed 24 hours' }
 
-  // Conflict check in the extended window [current_end, new_end)
   const { data: conflict } = await supabase
     .from('bookings')
     .select('id')
@@ -748,7 +733,7 @@ export async function forceFreeSeat(
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   SLOT CONFIG (stored as JSONB in libraries.description)
+   SLOT CONFIG
 ═══════════════════════════════════════════════════════════════════════════ */
 export type SlotConfig = {
   id:        string
@@ -951,12 +936,17 @@ export async function toggleLibraryActive(libraryId: string, is_active: boolean)
 
 /* ═══════════════════════════════════════════════════════════════════════════
    GET FIRST LIBRARY ID
+   ─────────────────────────────────────────────────────────────────────────
+   Wrapped in React cache() so that when layout.tsx and a page.tsx both call
+   this within the same server render pass, only ONE DB query fires.
+   The cache is per-request (not persistent) — React discards it after the
+   render tree completes.
 ═══════════════════════════════════════════════════════════════════════════ */
-export async function getFirstLibraryId(): Promise<string | null> {
+export const getFirstLibraryId = cache(async (): Promise<string | null> => {
   const { supabase, user } = await getSupabaseUser()
   if (!user) return null
   const { data } = await supabase
     .from('libraries').select('id').eq('owner_id', user.id)
     .order('created_at', { ascending: true }).limit(1).maybeSingle()
   return (data as any)?.id ?? null
-}
+})

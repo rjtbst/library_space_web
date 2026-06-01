@@ -5,7 +5,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import type { ActionResult } from '@/lib/actions/auth'
 import { nowIST, todayRangeIST, validateISTRange } from '@/lib/ist'
 import { log, logError } from '@/lib/logger'
-
+import {cache} from 'react'
 /* ═══════════════════════════════════════════════════════════════════════════
    TYPES
 ═══════════════════════════════════════════════════════════════════════════ */
@@ -117,7 +117,7 @@ export async function setupStaffProfile(input: {
 ═══════════════════════════════════════════════════════════════════════════ */
 
 /** Returns the library the current staff user is assigned to, or null. */
-export async function getStaffLibrary(): Promise<StaffLibrary | null> {
+export const getStaffLibrary = cache(async (): Promise<StaffLibrary | null>  =>{
   const supabase = await createServerSupabaseClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
@@ -141,7 +141,7 @@ export async function getStaffLibrary(): Promise<StaffLibrary | null> {
     city:        lib.city   ?? '',
     role:        data.role  ?? null,
   }
-}
+})
 
 /** Used by onboarding profile page to show already-assigned libraries. */
 export async function getStaffAssignedLibraries(): Promise<AssignedLibrary[]> {

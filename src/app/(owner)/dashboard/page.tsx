@@ -4,7 +4,6 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import {
   getFirstLibraryId, getDashboardStats, getMonthlyRevenue,
   getTodayBookings, getSlotHeatmap,
-  // getOwnerLibraries  ← REMOVED, already in layout context
 } from '@/lib/actions/owner'
 import DashboardClient from '@/components/owner/DashboardClient'
 
@@ -17,11 +16,10 @@ export default async function OwnerDashboardPage({
 }) {
   const { lib } = await searchParams
 
-  // Layout already verified auth — we only need libraryId resolution here
+  // cache() on getFirstLibraryId means this is free if layout already called it
   const libraryId = lib ?? await getFirstLibraryId()
   if (!libraryId) redirect('/onboarding/add-library')
 
-  // All 5 fetches in parallel, getOwnerLibraries() gone
   const [stats, revenue, bookings, heatmap, libRow] = await Promise.all([
     getDashboardStats(libraryId),
     getMonthlyRevenue(libraryId),

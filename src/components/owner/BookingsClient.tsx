@@ -1,39 +1,42 @@
+// src/components/owner/BookingsClient.tsx
 'use client'
 import { useState, useTransition, useMemo, useCallback } from 'react'
-import type { TodayBooking } from '@/lib/actions/owner'
+import type { TodayBooking, SlotConfig } from '@/lib/actions/owner'
 import { checkInBooking } from '@/lib/actions/owner'
 import { fmtTime, getISTHour, fmtISTDate } from '@/lib/utils/format'
 import { ACCENT, ACCENT_LIGHT, BLUE, BLUE_LIGHT } from '@/lib/constants/theme'
 import { Card, PageHeader, EmptyState, StatusBadge } from '@/components/owner/ui'
 
-const SLOTS = ['All', '6–9 AM', '9 AM–12', '12–3 PM', '3–6 PM', '6–9 PM', '9–10 PM']
-const SLOT_HOURS: Record<string, [number, number]> = {
-  '6–9 AM':  [6,9], '9 AM–12': [9,12], '12–3 PM': [12,15],
-  '3–6 PM':  [15,18], '6–9 PM': [18,21], '9–10 PM': [21,22],
-}
-
 export default function BookingsClient({
-  bookings: initial, libraryName, libraryId,
+  bookings: initial, libraryName, libraryId, slots,
 }: {
   bookings:    TodayBooking[]
   libraryName: string
   libraryId:   string
+  slots:       SlotConfig[]
 }) {
   const [bookings, setBookings]      = useState(initial)
   const [activeSlot, setActiveSlot]  = useState('All')
   const [isPending, startTransition] = useTransition()
 
-  // ← useMemo: filtered list only recomputes when bookings or slot changes
+  // Build tab labels from DB slots — stable until slots prop changes
+  const slotTabs = useMemo(
+    () => ['All', ...slots.filter(s => s.is_active).map(s => `${s.start}–${s.end}`)],
+    [slots],
+  )
+
   const filtered = useMemo(() => {
     if (activeSlot === 'All') return bookings
-    const [sh, eh] = SLOT_HOURS[activeSlot] ?? [0, 24]
+    const slot = slots.find(s => `${s.start}–${s.end}` === activeSlot)
+    if (!slot) return bookings
+    const sh = parseInt(slot.start.split(':')[0], 10)
+    const eh = parseInt(slot.end.split(':')[0], 10)
     return bookings.filter(b => {
       const h = getISTHour(b.start_time)
       return h >= sh && h < eh
     })
-  }, [bookings, activeSlot])
+  }, [bookings, activeSlot, slots])
 
-  // ← useMemo: summary counts
   const summary = useMemo(() => ({
     total:     bookings.length,
     confirmed: bookings.filter(b => b.status === 'confirmed').length,
@@ -41,7 +44,6 @@ export default function BookingsClient({
     noShows:   bookings.filter(b => b.status === 'no_show').length,
   }), [bookings])
 
-  // ← useCallback: stable reference, no re-creation on every render
   const handleCheckIn = useCallback((bookingId: string) => {
     startTransition(async () => {
       const res = await checkInBooking(bookingId)
@@ -72,7 +74,7 @@ export default function BookingsClient({
 
       {/* Slot tabs */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 20 }}>
-        {SLOTS.map(slot => (
+        {slotTabs.map(slot => (
           <button key={slot} onClick={() => setActiveSlot(slot)} style={{
             padding: '6px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600,
             border: `1.5px solid ${activeSlot === slot ? BLUE : '#E2DDD4'}`,

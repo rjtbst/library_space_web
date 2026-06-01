@@ -1,10 +1,10 @@
 // src/app/(owner)/dashboard/bookings/page.tsx
 import { redirect } from 'next/navigation'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { getFirstLibraryId, getTodayBookings } from '@/lib/actions/owner'
+import { getFirstLibraryId, getTodayBookings, getSlotConfigs } from '@/lib/actions/owner'
 import BookingsClient from '@/components/owner/BookingsClient'
 
-export const dynamic = 'force-dynamic'  // already have this ✓
+export const dynamic = 'force-dynamic'
 
 export default async function BookingsPage({
   searchParams,
@@ -14,15 +14,15 @@ export default async function BookingsPage({
   const { lib } = await searchParams
 
   const supabase = await createServerSupabaseClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/auth/login')
+  
 
   const libraryId = lib ?? await getFirstLibraryId()
   if (!libraryId) redirect('/onboarding/add-library')
 
-  const [bookings, libRow] = await Promise.all([
+  const [bookings, libRow, slots] = await Promise.all([
     getTodayBookings(libraryId),
     supabase.from('libraries').select('name').eq('id', libraryId).maybeSingle(),
+    getSlotConfigs(libraryId),
   ])
 
   return (
@@ -30,6 +30,7 @@ export default async function BookingsPage({
       bookings={bookings}
       libraryName={libRow.data?.name ?? ''}
       libraryId={libraryId}
+      slots={slots}
     />
   )
 }

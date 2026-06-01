@@ -1,29 +1,29 @@
 // src/app/(owner)/dashboard/slot-config/page.tsx
 import { redirect } from 'next/navigation'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
-import { getFirstLibraryId, getSlotConfigs, getOwnerLibraries } from '@/lib/actions/owner'
+import { getFirstLibraryId, getSlotConfigs } from '@/lib/actions/owner'
+// getOwnerLibraries REMOVED — SlotConfigClient reads libraries from useOwner() context
 import SlotConfigClient from '@/components/owner/SlotConfigClient'
 
 export const dynamic = 'force-dynamic'
 
-export default async function SlotConfigPage({ searchParams }: { searchParams: Promise<{ lib?: string }> }) {
+export default async function SlotConfigPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ lib?: string }>
+}) {
   const { lib } = await searchParams
-  const supabase = await createServerSupabaseClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/auth/login')
 
   const libraryId = lib ?? await getFirstLibraryId()
   if (!libraryId) redirect('/onboarding/add-library')
 
-  // ← ONE query instead of two (getOwnerLibraries removed — lives in context)
+  // Single client instantiation — both queries share it.
+  // Previously this page created a second client inside the Promise.all via
+  // a dynamic import, which was wasteful. Now it's one client, two parallel queries.
+  const supabase = await createServerSupabaseClient()
   const [slots, libRow] = await Promise.all([
     getSlotConfigs(libraryId),
-    // Get just this library's name efficiently
-    (async () => {
-      const { createServerSupabaseClient: sc } = await import('@/lib/supabase/server')
-      const db = await sc()
-      return db.from('libraries').select('name').eq('id', libraryId).maybeSingle()
-    })(),
+    supabase.from('libraries').select('name').eq('id', libraryId).maybeSingle(),
   ])
 
   return (
@@ -31,7 +31,6 @@ export default async function SlotConfigPage({ searchParams }: { searchParams: P
       slots={slots}
       libraryId={libraryId}
       libraryName={libRow.data?.name ?? ''}
-      // ← libraries prop removed — component reads from useOwner()
     />
   )
 }

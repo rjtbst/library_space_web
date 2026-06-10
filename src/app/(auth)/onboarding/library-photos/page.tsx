@@ -1,3 +1,4 @@
+// src/app/(auth)/onboarding/library-photos/page.tsx
 'use client'
 
 import { useState, useRef, useTransition, useCallback } from 'react'

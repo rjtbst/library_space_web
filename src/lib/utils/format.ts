@@ -48,28 +48,8 @@ export function fmtISTDate(date = new Date()): string {
   })
 }
 
-// ── ADD THESE to your existing lib/utils.ts ──────────────────────────────────
 
-/**
- * "HH:MM:SS" or ISO → "6 AM – 10 PM" style open hours string
- */
-export function fmtOpenHours(openRaw: string, closeRaw: string): string {
-  return `${fmtTime(openRaw)} – ${fmtTime(closeRaw)}`
-}
 
-/**
- * Check if library is open right now (IST)
- * Accepts "HH:MM:SS" strings from Postgres time column
- */
-export function isOpenNow(openRaw: string, closeRaw: string): boolean {
-  const nowIST = new Date(
-    new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
-  )
-  const nowMin = nowIST.getHours() * 60 + nowIST.getMinutes()
-  const openMin  = getISTHour(openRaw)  * 60 + parseInt(openRaw.slice(3, 5),  10)
-  const closeMin = getISTHour(closeRaw) * 60 + parseInt(closeRaw.slice(3, 5), 10)
-  return nowMin >= openMin && nowMin < closeMin
-}
 
 /**
  * Build a Postgres-compatible IST timestamp string (no timezone suffix).
@@ -86,9 +66,72 @@ export function buildISTTimestamp(date: Date, hour: number, minute = 0): string 
   return `${y}-${mo}-${d} ${h}:${m}:00`
 }
 
+
 /**
- * Slot definitions used across the booking flow.
- * Centralised here so owner/staff/student all reference the same slots.
+ * "HH:MM:SS" or ISO → "6 AM – 10 PM" style open hours string
+ * Reuses your existing fmtTime().
+ */
+export function fmtOpenHours(openRaw: string, closeRaw: string): string {
+  return `${fmtTime(openRaw)} – ${fmtTime(closeRaw)}`
+}
+
+/**
+ * Is a library open right now (IST)?
+ * Accepts "HH:MM:SS" strings from Postgres time column.
+ * Uses millisecond comparison — no date-fns, no moment.
+ */
+export function isOpenNow(openRaw: string, closeRaw: string): boolean {
+  // Get current IST time-of-day in milliseconds since midnight
+  const nowMs = nowISTMs()
+  const openMs  = timeStringToMs(openRaw)
+  const closeMs = timeStringToMs(closeRaw)
+  return nowMs >= openMs && nowMs < closeMs
+}
+
+/**
+ * Current IST time-of-day in milliseconds since midnight.
+ * e.g. 9:30 AM IST → 34200000
+ */
+export function nowISTMs(): number {
+  const now = new Date()
+  // Convert to IST by adding UTC+5:30 offset (19800000 ms) to UTC ms,
+  // then mod by 86400000 to get ms since midnight IST.
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60_000
+  const istMs = utcMs + 19_800_000 // UTC+5:30 = 5.5 * 3600000
+  return istMs % 86_400_000
+}
+
+/**
+ * "HH:MM:SS" → milliseconds since midnight.
+ * Works for both "09:30:00" and "09:30".
+ */
+export function timeStringToMs(raw: string): number {
+  const [h, m, s] = raw.split(':').map(Number)
+  return (h * 3600 + (m || 0) * 60 + (s || 0)) * 1000
+}
+
+/**
+ * Build a Postgres-compatible IST timestamp string.
+ * Stores as plain IST wall-clock — no timezone suffix.
+ * Output: "YYYY-MM-DD HH:MM:00"
+ *
+ * @param dateMs  - JS Date .getTime() for the calendar date (Y/M/D treated as local IST)
+ * @param hour    - IST hour (0-23)
+ * @param minute  - IST minute (default 0)
+ */
+
+
+/**
+ * Parse a date string "YYYY-MM-DD" into a JS Date at midnight local time.
+ */
+export function parseDateStr(dateStr: string): Date {
+  const [y, mo, d] = dateStr.split('-').map(Number)
+  return new Date(y, mo - 1, d)
+}
+
+/**
+ * Booking slot definitions — single source of truth for all roles.
+ * Owner slot config, staff check-in, and student booking all use this array.
  */
 export const BOOKING_SLOTS = [
   { label: '6–9 AM',   startH: 6,  endH: 9  },
@@ -102,11 +145,28 @@ export const BOOKING_SLOTS = [
 export type BookingSlot = typeof BOOKING_SLOTS[number]
 
 /**
- * "EEE, dd MMM yyyy" in IST — e.g. "Mon, 12 May 2025"
+ * Short date: "Mon, 12 May 2025" in IST
  */
 export function fmtISTDateShort(date: Date): string {
   return date.toLocaleDateString('en-IN', {
     weekday: 'short', day: '2-digit', month: 'short', year: 'numeric',
     timeZone: 'Asia/Kolkata',
   })
+}
+
+/** Duration in hours between two IST timestamp strings */
+export function durationHours(start: string, end: string): number {
+  return (new Date(end).getTime() - new Date(start).getTime()) / 3_600_000
+}
+
+/** Milliseconds until a future IST timestamp string */
+export function msUntil(istTimestamp: string): number {
+  return Math.max(0, new Date(istTimestamp).getTime() - Date.now())
+}
+
+/** Format seconds as "M:SS" countdown */
+export function fmtCountdown(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60)
+  const s = totalSeconds % 60
+  return `${m}:${String(s).padStart(2, '0')}`
 }

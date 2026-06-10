@@ -1,3 +1,4 @@
+// src/lib/actions/auth.ts
 'use server'
 
 import { redirect } from 'next/navigation'
@@ -38,7 +39,7 @@ const roleSchema = z.enum(['student', 'owner', 'staff'])
 function dashboardForRole(role: UserRole | null | undefined): string {
   if (role === 'owner') return '/dashboard'
   if (role === 'staff') return '/staff'
-  return '/student/home'
+  return '/explore'
 }
 
 // ─── Google OAuth ─────────────────────────────────────────────────────────────

@@ -1,35 +1,42 @@
+// app/(owner)/onboarding/add-library/page.tsx  — REPLACE existing file
 'use client'
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { createLibrary } from '@/lib/actions/library'
 import { STATE_CITY_MAP } from '@/lib/config'
+import LocationPicker from '@/components/owner/LocationPicker'
 
+/* ─── Design tokens (match owner dashboard theme) ──────────────── */
 const ACCENT       = '#0D7C54'
 const ACCENT_LIGHT = '#D1FAE5'
 const ACCENT_DARK  = '#0A5E3F'
 
 const AMENITIES = [
-  { label: '📶 WiFi',         value: 'wifi' },
-  { label: '❄️ AC',           value: 'ac' },
-  { label: '🔇 Quiet Zone',   value: 'quiet_zone' },
-  { label: '🔌 Power Sockets',value: 'power_sockets' },
-  { label: '🚗 Parking',      value: 'parking' },
-  { label: '☕ Cafe',          value: 'cafe' },
-  { label: '🚽 Washroom',     value: 'washroom' },
+  { label: '📶 WiFi',          value: 'WiFi'          },
+  { label: '❄️ AC',            value: 'AC'            },
+  { label: '🔇 Quiet Zone',    value: 'Quiet Zone'    },
+  { label: '🔌 Power Sockets', value: 'Power Sockets' },
+  { label: '🚗 Parking',       value: 'Parking'       },
+  { label: '☕ Cafeteria',      value: 'Cafeteria'     },
+  { label: '🚽 Washroom',      value: 'Washroom'      },
+  { label: '🔐 Locker',        value: 'Locker'        },
+  { label: '🖨️ Printing',      value: 'Printing'      },
+  { label: '📹 CCTV',          value: 'CCTV'          },
+  { label: '⚡ Power Backup',   value: 'Power Backup'  },
 ]
 
 function Steps() {
   const steps = [
-    { label: 'Phone',    done: true },
-    { label: 'OTP',      done: true },
-    { label: 'Profile',  done: true },
-    { label: 'Library',  done: false, active: true },
-    { label: 'Photos',   done: false },
-    { label: 'Go Live',  done: false },
+    { label: 'Phone',   done: true },
+    { label: 'OTP',     done: true },
+    { label: 'Profile', done: true },
+    { label: 'Library', done: false, active: true },
+    { label: 'Photos',  done: false },
+    { label: 'Go Live', done: false },
   ]
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0, marginBottom: 32 }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 32 }}>
       {steps.map((s, i) => (
         <div key={s.label} style={{ display: 'flex', alignItems: 'center' }}>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5 }}>
@@ -39,14 +46,12 @@ function Steps() {
               background: s.done ? ACCENT : s.active ? ACCENT : '#E2DDD4',
               color: s.done || s.active ? '#fff' : '#9AAAB8',
               boxShadow: s.active ? `0 0 0 3px ${ACCENT_LIGHT}` : 'none',
-              transition: 'all .2s',
             }}>
               {s.done ? '✓' : i + 1}
             </div>
             <span style={{
               fontSize: 9, fontWeight: s.active ? 700 : 500,
               color: s.active ? ACCENT : s.done ? '#3A4A5C' : '#9AAAB8',
-              letterSpacing: '.02em',
             }}>
               {s.label}
             </span>
@@ -55,7 +60,7 @@ function Steps() {
             <div style={{
               width: 28, height: 2,
               background: s.done ? ACCENT : '#E2DDD4',
-              margin: '0 3px', marginBottom: 18, transition: 'background .3s',
+              margin: '0 3px', marginBottom: 18,
             }} />
           )}
         </div>
@@ -73,12 +78,12 @@ const inpBase: React.CSSProperties = {
   appearance: 'none' as const,
 }
 
-function Field({
-  label, required, optional, children, style,
-}: { label: string; required?: boolean; optional?: boolean; children: React.ReactNode; style?: React.CSSProperties }) {
+function Field({ label, required, optional, children }: {
+  label: string; required?: boolean; optional?: boolean; children: React.ReactNode
+}) {
   return (
-    <div style={{ marginBottom: 16, ...style }}>
-      <label style={{ fontSize: 12, fontWeight: 600, color: '#3A4A5C', display: 'block', marginBottom: 6, letterSpacing: '.01em' }}>
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ fontSize: 12, fontWeight: 600, color: '#3A4A5C', display: 'block', marginBottom: 6 }}>
         {label}
         {required && <span style={{ color: ACCENT, marginLeft: 2 }}>*</span>}
         {optional && <span style={{ color: '#9AAAB8', fontWeight: 400, marginLeft: 4 }}>(optional)</span>}
@@ -91,19 +96,22 @@ function Field({
 export default function AddLibraryPage() {
   const router = useRouter()
 
-  const [name,        setName]        = useState('')
-  const [state,       setState]       = useState('')
-  const [city,        setCity]        = useState('')
-  const [area,        setArea]        = useState('')
-  const [address,     setAddress]     = useState('')
-  const [mapsLink,    setMapsLink]    = useState('')
-  const [openTime,    setOpenTime]    = useState('06:00')
-  const [closeTime,   setCloseTime]   = useState('22:00')
-  const [basePrice,   setBasePrice]   = useState('')
-  const [totalSeats,  setTotalSeats]  = useState('')
-  const [amenities,   setAmenities]   = useState<string[]>(['wifi', 'ac', 'quiet_zone', 'power_sockets', 'washroom'])
-  const [error,       setError]       = useState('')
-  const [isPending,   startTransition] = useTransition()
+  const [name,       setName]       = useState('')
+  const [state,      setState]      = useState('')
+  const [city,       setCity]       = useState('')
+  const [area,       setArea]       = useState('')
+  const [address,    setAddress]    = useState('')
+  const [mapsLink,   setMapsLink]   = useState('')
+  const [openTime,   setOpenTime]   = useState('06:00')
+  const [closeTime,  setCloseTime]  = useState('22:00')
+  const [basePrice,  setBasePrice]  = useState('')
+  const [totalSeats, setTotalSeats] = useState('')
+  const [amenities,  setAmenities]  = useState<string[]>(['WiFi', 'AC', 'Quiet Zone', 'Power Sockets', 'Washroom'])
+  const [lat,        setLat]        = useState<number | null>(null)
+  const [lng,        setLng]        = useState<number | null>(null)
+  const [razorpayId, setRazorpayId] = useState('')
+  const [error,      setError]      = useState('')
+  const [isPending,  startTransition] = useTransition()
 
   const valid = name.trim().length >= 2 && !!city && address.trim().length >= 5
 
@@ -116,34 +124,32 @@ export default function AddLibraryPage() {
     e.target.style.boxShadow   = 'none'
   }
 
-  const toggleAmenity = (val: string) => {
-    setAmenities(prev =>
-      prev.includes(val) ? prev.filter(a => a !== val) : [...prev, val]
-    )
-  }
+  const toggleAmenity = (val: string) =>
+    setAmenities((prev) => prev.includes(val) ? prev.filter((a) => a !== val) : [...prev, val])
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     startTransition(async () => {
-      const res = await createLibrary({
-        name: name.trim(),
+      const libraryData = {
+        name:                name.trim(),
         city,
         state,
-        area: area.trim(),
-        address: address.trim(),
-        maps_link: mapsLink.trim() || null,
-        open_time: openTime,
-        close_time: closeTime,
-        base_price: basePrice ? parseFloat(basePrice) : null,
-        total_seats: totalSeats ? parseInt(totalSeats, 10) : null,
+        area:                area.trim(),
+        address:             address.trim(),
+        maps_link:           mapsLink.trim() || null,
+        open_time:           openTime,
+        close_time:          closeTime,
+        base_price:          basePrice   ? parseFloat(basePrice)   : null,
+        total_seats:         totalSeats  ? parseInt(totalSeats, 10) : null,
         amenities,
-      })
-      if (res.success === false) {
-        setError(res.error)
-        return
-      }
-      // Step 5 — Photos
+        latitude:            lat,
+        longitude:           lng,
+        razorpay_account_id: razorpayId.trim() || null,
+      } as any
+
+      const res = await createLibrary(libraryData)
+      if (res.success === false) { setError(res.error); return }
       router.push(`/onboarding/library-photos?id=${res.data.libraryId}`)
     })
   }
@@ -154,38 +160,23 @@ export default function AddLibraryPage() {
     <div style={{
       minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
       background: 'linear-gradient(135deg,#F4F7FB 0%,#EDE8DC 100%)',
-      fontFamily: 'DM Sans, sans-serif', padding: '24px 16px', position: 'relative',
+      fontFamily: 'DM Sans, sans-serif', padding: '24px 16px',
     }}>
-      {/* Blobs */}
-      <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0 }}>
-        <div style={{ position: 'absolute', width: 500, height: 500, top: -150, right: -100, borderRadius: '50%', background: 'radial-gradient(circle,rgba(13,124,84,.05),transparent 70%)' }} />
-        <div style={{ position: 'absolute', width: 400, height: 400, bottom: -100, left: -80, borderRadius: '50%', background: 'radial-gradient(circle,rgba(18,70,255,.04),transparent 70%)' }} />
-      </div>
-
-      <div style={{ width: '100%', maxWidth: 560, position: 'relative', zIndex: 1 }}>
+      <div style={{ width: '100%', maxWidth: 560 }}>
         <Steps />
 
-        {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
           <div style={{
             width: 52, height: 52, borderRadius: 14, background: ACCENT,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             margin: '0 auto 16px', boxShadow: '0 4px 18px rgba(13,124,84,.32)', fontSize: 24,
-          }}>
-            📚
-          </div>
-          <h1 style={{
-            fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 26,
-            color: '#0A0D12', letterSpacing: '-0.04em', marginBottom: 6,
-          }}>
+          }}>📚</div>
+          <h1 style={{ fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 26, color: '#0A0D12', letterSpacing: '-0.04em', marginBottom: 6 }}>
             Register your library
           </h1>
-          <p style={{ fontSize: 14, color: '#6B7689', fontWeight: 300, lineHeight: 1.5, margin: 0 }}>
-            Step 4 of 6 — Basic information
-          </p>
+          <p style={{ fontSize: 14, color: '#6B7689', fontWeight: 300 }}>Step 4 of 6 — Basic information</p>
         </div>
 
-        {/* Card */}
         <div style={{
           background: '#FDFCF9', border: '1px solid #E2DDD4',
           borderRadius: 20, padding: '28px 28px 24px',
@@ -194,120 +185,84 @@ export default function AddLibraryPage() {
           <form onSubmit={handleSubmit}>
 
             <Field label="Library name" required>
-              <input
-                type="text" autoFocus
-                placeholder="e.g. Silence Study Hub"
-                value={name}
-                onChange={e => setName(e.target.value)}
-                style={inpBase} onFocus={onFocus} onBlur={onBlur}
-              />
+              <input type="text" autoFocus placeholder="e.g. Silence Study Hub"
+                value={name} onChange={(e) => setName(e.target.value)}
+                style={inpBase} onFocus={onFocus} onBlur={onBlur} />
             </Field>
 
-            {/* City + Area row */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <Field label="State" required>
-                <select
-                  value={state}
-                  onChange={e => { setState(e.target.value); setCity('') }}
-                  style={{ ...inpBase, cursor: 'pointer' }}
-                  onFocus={onFocus} onBlur={onBlur}
-                >
+                <select value={state} onChange={(e) => { setState(e.target.value); setCity('') }}
+                  style={{ ...inpBase, cursor: 'pointer' }} onFocus={onFocus} onBlur={onBlur}>
                   <option value="">Select state</option>
-                  {Object.keys(STATE_CITY_MAP).map(s => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
+                  {Object.keys(STATE_CITY_MAP).map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
               </Field>
               <Field label="City" required>
-                <select
-                  value={city}
-                  onChange={e => setCity(e.target.value)}
-                  disabled={!state}
+                <select value={city} onChange={(e) => setCity(e.target.value)} disabled={!state}
                   style={{ ...inpBase, cursor: state ? 'pointer' : 'not-allowed', opacity: state ? 1 : 0.55 }}
-                  onFocus={onFocus} onBlur={onBlur}
-                >
+                  onFocus={onFocus} onBlur={onBlur}>
                   <option value="">{state ? 'Select city' : 'Select state first'}</option>
-                  {cities.map(c => <option key={c} value={c}>{c}</option>)}
+                  {cities.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
               </Field>
             </div>
 
-            <Field label="Area / Locality">
-              <input
-                type="text"
-                placeholder="e.g. Civil Lines"
-                value={area}
-                onChange={e => setArea(e.target.value)}
-                style={inpBase} onFocus={onFocus} onBlur={onBlur}
-              />
+            <Field label="Area / Locality" optional>
+              <input type="text" placeholder="e.g. Civil Lines"
+                value={area} onChange={(e) => setArea(e.target.value)}
+                style={inpBase} onFocus={onFocus} onBlur={onBlur} />
             </Field>
 
             <Field label="Full address" required>
-              <textarea
-                placeholder="Shop No., Street, Landmark"
-                value={address}
-                onChange={e => setAddress(e.target.value)}
-                rows={3}
-                style={{
-                  ...inpBase,
-                  resize: 'vertical', minHeight: 80, lineHeight: 1.5,
-                }}
-                onFocus={onFocus as any} onBlur={onBlur as any}
-              />
+              <textarea placeholder="Shop No., Street, Landmark"
+                value={address} onChange={(e) => setAddress(e.target.value)}
+                rows={3} style={{ ...inpBase, resize: 'vertical', minHeight: 80 }}
+                onFocus={onFocus as any} onBlur={onBlur as any} />
             </Field>
 
             <Field label="Google Maps link" optional>
-              <input
-                type="url"
-                placeholder="Paste maps.google.com link"
-                value={mapsLink}
-                onChange={e => setMapsLink(e.target.value)}
-                style={inpBase} onFocus={onFocus} onBlur={onBlur}
-              />
+              <input type="url" placeholder="Paste maps.google.com link"
+                value={mapsLink} onChange={(e) => setMapsLink(e.target.value)}
+                style={inpBase} onFocus={onFocus} onBlur={onBlur} />
             </Field>
 
-            {/* Open / Close time row */}
+            {/* ── Location picker ──────────────────────────────── */}
+            <div style={{ marginBottom: 16 }}>
+              <LocationPicker
+                lat={lat}
+                lng={lng}
+                onChange={(newLat, newLng) => { setLat(newLat); setLng(newLng) }}
+              />
+            </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <Field label="Opening time">
-                <input
-                  type="time"
-                  value={openTime}
-                  onChange={e => setOpenTime(e.target.value)}
-                  style={inpBase} onFocus={onFocus} onBlur={onBlur}
-                />
+                <input type="time" value={openTime} onChange={(e) => setOpenTime(e.target.value)}
+                  style={inpBase} onFocus={onFocus} onBlur={onBlur} />
               </Field>
               <Field label="Closing time">
-                <input
-                  type="time"
-                  value={closeTime}
-                  onChange={e => setCloseTime(e.target.value)}
-                  style={inpBase} onFocus={onFocus} onBlur={onBlur}
-                />
+                <input type="time" value={closeTime} onChange={(e) => setCloseTime(e.target.value)}
+                  style={inpBase} onFocus={onFocus} onBlur={onBlur} />
               </Field>
             </div>
 
             {/* Amenities */}
             <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 12, fontWeight: 600, color: '#3A4A5C', display: 'block', marginBottom: 8, letterSpacing: '.01em' }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#3A4A5C', display: 'block', marginBottom: 8 }}>
                 Amenities available
               </label>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {AMENITIES.map(({ label, value }) => {
                   const selected = amenities.includes(value)
                   return (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => toggleAmenity(value)}
-                      style={{
-                        padding: '6px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600,
-                        cursor: 'pointer', fontFamily: 'DM Sans, sans-serif',
-                        border: `1.5px solid ${selected ? ACCENT : '#E2DDD4'}`,
-                        background: selected ? ACCENT_LIGHT : '#FDFCF9',
-                        color: selected ? ACCENT : '#6B7689',
-                        transition: 'all .15s',
-                      }}
-                    >
+                    <button key={value} type="button" onClick={() => toggleAmenity(value)} style={{
+                      padding: '6px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600,
+                      cursor: 'pointer', fontFamily: 'DM Sans, sans-serif',
+                      border: `1.5px solid ${selected ? ACCENT : '#E2DDD4'}`,
+                      background: selected ? ACCENT_LIGHT : '#FDFCF9',
+                      color: selected ? ACCENT : '#6B7689', transition: 'all .15s',
+                    }}>
                       {label}
                     </button>
                   )
@@ -315,27 +270,28 @@ export default function AddLibraryPage() {
               </div>
             </div>
 
-            {/* Price + Seats row */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <Field label="Base price per hour (₹)">
-                <input
-                  type="number" min="0" step="1"
-                  placeholder="25"
-                  value={basePrice}
-                  onChange={e => setBasePrice(e.target.value)}
-                  style={inpBase} onFocus={onFocus} onBlur={onBlur}
-                />
+              <Field label="Base price / hour (₹)">
+                <input type="number" min="0" step="1" placeholder="25"
+                  value={basePrice} onChange={(e) => setBasePrice(e.target.value)}
+                  style={inpBase} onFocus={onFocus} onBlur={onBlur} />
               </Field>
               <Field label="Total seats">
-                <input
-                  type="number" min="1" step="1"
-                  placeholder="48"
-                  value={totalSeats}
-                  onChange={e => setTotalSeats(e.target.value)}
-                  style={inpBase} onFocus={onFocus} onBlur={onBlur}
-                />
+                <input type="number" min="1" step="1" placeholder="48"
+                  value={totalSeats} onChange={(e) => setTotalSeats(e.target.value)}
+                  style={inpBase} onFocus={onFocus} onBlur={onBlur} />
               </Field>
             </div>
+
+            {/* Razorpay account ID */}
+            <Field label="Razorpay Account ID" optional>
+              <input type="text" placeholder="acc_XXXXXXXXXXXXXXXXXX"
+                value={razorpayId} onChange={(e) => setRazorpayId(e.target.value)}
+                style={inpBase} onFocus={onFocus} onBlur={onBlur} />
+              <p style={{ fontSize: 11, color: '#9AAAB8', marginTop: 4 }}>
+                Your Razorpay linked account ID for receiving payments directly. Find it in Razorpay Dashboard → Account Settings.
+              </p>
+            </Field>
 
             <div style={{ height: 1, background: '#E2DDD4', margin: '8px 0 20px' }} />
 
@@ -346,53 +302,40 @@ export default function AddLibraryPage() {
                 display: 'flex', gap: 8, alignItems: 'flex-start',
               }}>
                 <span style={{ flexShrink: 0 }}>⚠️</span>
-                <p style={{ fontSize: 13, color: '#9B1C1C', margin: 0, lineHeight: 1.4 }}>{error}</p>
+                <p style={{ fontSize: 13, color: '#9B1C1C', margin: 0 }}>{error}</p>
               </div>
             )}
 
             <div style={{ display: 'flex', gap: 10 }}>
-              <button
-                type="button"
-                onClick={() => router.back()}
-                style={{
-                  flex: 1, padding: '13px 0', borderRadius: 10, fontSize: 14, fontWeight: 600,
-                  fontFamily: 'DM Sans, sans-serif', border: '1.5px solid #E2DDD4',
-                  background: '#FDFCF9', color: '#3A4A5C', cursor: 'pointer',
-                  transition: 'all .2s',
-                }}
-              >
+              <button type="button" onClick={() => router.back()} style={{
+                flex: 1, padding: '13px 0', borderRadius: 10, fontSize: 14, fontWeight: 600,
+                fontFamily: 'DM Sans, sans-serif', border: '1.5px solid #E2DDD4',
+                background: '#FDFCF9', color: '#3A4A5C', cursor: 'pointer',
+              }}>
                 ← Back
               </button>
-              <button
-                type="submit"
-                disabled={!valid || isPending}
-                style={{
-                  flex: 2, padding: '13px 0', borderRadius: 10, fontSize: 15,
-                  fontWeight: 700, fontFamily: 'Syne, sans-serif', border: 'none',
-                  background: valid ? ACCENT : '#C8D4C8', color: '#fff',
-                  cursor: valid ? 'pointer' : 'not-allowed',
-                  boxShadow: valid ? '0 4px 16px rgba(13,124,84,.3)' : 'none',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                  transition: 'all .2s',
-                }}
-                onMouseEnter={e => { if (valid) e.currentTarget.style.background = ACCENT_DARK }}
-                onMouseLeave={e => { if (valid) e.currentTarget.style.background = ACCENT }}
-              >
+              <button type="submit" disabled={!valid || isPending} style={{
+                flex: 2, padding: '13px 0', borderRadius: 10, fontSize: 15, fontWeight: 700,
+                fontFamily: 'Syne, sans-serif', border: 'none',
+                background: valid ? ACCENT : '#C8D4C8', color: '#fff',
+                cursor: valid ? 'pointer' : 'not-allowed',
+                boxShadow: valid ? '0 4px 16px rgba(13,124,84,.3)' : 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              }}>
                 {isPending && (
                   <span style={{
                     width: 15, height: 15, border: '2px solid rgba(255,255,255,.35)',
                     borderTopColor: '#fff', borderRadius: '50%', display: 'inline-block',
-                    animation: 'spin .65s linear infinite', flexShrink: 0,
+                    animation: 'spin .65s linear infinite',
                   }} />
                 )}
-                {isPending ? 'Saving...' : 'Save & Continue →'}
+                {isPending ? 'Saving…' : 'Save & Continue →'}
               </button>
             </div>
-
           </form>
         </div>
 
-        <p style={{ textAlign: 'center', marginTop: 18, fontSize: 12, color: '#9AAAB8', lineHeight: 1.6 }}>
+        <p style={{ textAlign: 'center', marginTop: 18, fontSize: 12, color: '#9AAAB8' }}>
           You can edit library details anytime from your dashboard.
         </p>
       </div>

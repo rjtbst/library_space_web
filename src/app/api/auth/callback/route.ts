@@ -56,6 +56,61 @@ export async function GET(request: NextRequest) {
   switch (userRow.role) {
     case 'owner':  return NextResponse.redirect(`${origin}/dashboard`)
     case 'staff':  return NextResponse.redirect(`${origin}/staff`)
-    default:       return NextResponse.redirect(`${origin}/student/home`)
+    default:       return NextResponse.redirect(`${origin}/explore`)
   }
 }
+
+
+
+
+
+// app/auth/callback/route.ts
+// Supabase Auth callback handler.
+// After successful login, redirect student → /explore, owner → /dashboard.
+
+// import { NextRequest, NextResponse } from 'next/server'
+// import { createServerSupabaseClient } from '@/lib/supabase/server'
+
+// export const dynamic = 'force-dynamic'
+
+// export async function GET(req: NextRequest) {
+//   const { searchParams, origin } = req.nextUrl
+//   const code = searchParams.get('code')
+//   const next = searchParams.get('next') ?? ''
+
+//   if (code) {
+//     const supabase = await createServerSupabaseClient()
+//     const { error } = await supabase.auth.exchangeCodeForSession(code)
+
+//     if (!error) {
+//       // If caller specified a redirect target, honour it
+//       if (next && next.startsWith('/')) {
+//         return NextResponse.redirect(`${origin}${next}`)
+//       }
+
+//       // Otherwise route by role
+//       const { data: { user } } = await supabase.auth.getUser()
+//       if (user) {
+//         const { data: profile } = await supabase
+//           .from('users')
+//           .select('role')
+//           .eq('id', user.id)
+//           .maybeSingle()
+
+//         const role = (profile as any)?.role as string | undefined
+
+//         if (role === 'owner') {
+//           return NextResponse.redirect(`${origin}/dashboard`)
+//         }
+//         if (role === 'staff') {
+//           return NextResponse.redirect(`${origin}/staff`)
+//         }
+//         // Default: student
+//         return NextResponse.redirect(`${origin}/explore`)
+//       }
+//     }
+//   }
+
+//   // Auth error → back to login
+//   return NextResponse.redirect(`${origin}/auth/login?error=auth_callback_failed`)
+// }

@@ -1,3 +1,4 @@
+// src/app/(auth)/onboarding/go-live/page.tsx
 'use client'
 
 import { useState, useTransition, useEffect } from 'react'

@@ -1,3 +1,4 @@
+// src/app/(auth)/onboarding/owner-profile/page.tsx
 'use client'
 
 import { useState, useTransition } from 'react'

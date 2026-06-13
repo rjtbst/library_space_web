@@ -10,6 +10,7 @@ import {
   Zap as Flash,
 } from 'lucide-react'
 import { type OwnerSlot, type SlotOption, ownerSlotToOption } from '@/lib/libraryMeta'
+import Image from 'next/image'
 
 type Plan = { id: string; name: string; price: number; duration_days: number; session_limit: string | null }
 type Library = {
@@ -62,7 +63,7 @@ export default function LibraryDetail({
       <div className="relative rounded-xl overflow-hidden h-[200px] sm:h-[240px] mb-5 flex items-center justify-center text-7xl"
         style={{ background: library.images.length === 0 ? GRADS[0] : undefined }}>
         {library.images.length > 0
-          ? <img src={library.images[imgIdx % library.images.length]} alt={library.name} className="w-full h-full object-cover" />
+          ? <Image src={library.images[imgIdx % library.images.length]} alt={library.name} className="w-full h-full object-cover" />
           : '📚'}
         {library.images.length > 1 && <>
           <button onClick={() => setImgIdx((i) => (i - 1 + library.images.length) % library.images.length)}

@@ -3,14 +3,9 @@
    Single source of truth for content & tokens
 ───────────────────────────────────────────────── */
 export const STATE_CITY_MAP: Record<string, string[]> = {
-  'Uttar Pradesh': ['Meerut', 'Noida', 'Ghaziabad', 'Agra', 'Lucknow', 'Kanpur', 'Varanasi'],
-  'Delhi': ['New Delhi', 'Dwarka', 'Rohini', 'Saket'],
-  'Maharashtra': ['Mumbai', 'Pune', 'Nagpur', 'Nashik'],
+   'Delhi': ['New Delhi', 'Dwarka', 'Rohini', 'Saket'],
   'Uttarakhand': ['Dehradun', 'Haridwar', 'Roorkee', 'Haldwani'],
-  'Karnataka': ['Bangalore', 'Mysore'],
-  'Tamil Nadu': ['Chennai', 'Coimbatore'],
-  'Gujarat': ['Ahmedabad', 'Surat', 'Vadodara'],
-  'Rajasthan': ['Jaipur', 'Udaipur'],
+  
 }
 
 

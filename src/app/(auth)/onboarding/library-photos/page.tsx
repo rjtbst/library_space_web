@@ -1,15 +1,16 @@
-// src/app/(auth)/onboarding/library-photos/page.tsx
+// app/(owner)/onboarding/library-photos/page.tsx
 'use client'
 
-import { useState, useRef, useTransition, useCallback } from 'react'
+import { useState, useRef, useTransition, useCallback, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { uploadLibraryPhoto, deleteLibraryPhoto } from '@/lib/actions/library'
+import { uploadLibraryPhoto, deleteLibraryPhoto, setCoverPhoto, getLibraryPhotos } from '@/lib/actions/library'
+import Image from 'next/image'
 
 const ACCENT       = '#0D7C54'
 const ACCENT_LIGHT = '#D1FAE5'
 const ACCENT_DARK  = '#0A5E3F'
 
-/* ─── Step bar ─────────────────────────────────────────────────────────────── */
+/* ─── Steps ─────────────────────────────────────────────────── */
 function Steps() {
   const steps = [
     { label: 'Phone',   done: true  },
@@ -27,9 +28,9 @@ function Steps() {
             <div style={{
               width: 26, height: 26, borderRadius: '50%', display: 'flex',
               alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700,
-              background: s.done ? ACCENT : s.active ? ACCENT : '#E2DDD4',
-              color: s.done || s.active ? '#fff' : '#9AAAB8',
-              boxShadow: s.active ? `0 0 0 3px ${ACCENT_LIGHT}` : 'none',
+              background: s.done || s.active ? ACCENT : '#E2DDD4',
+              color:      s.done || s.active ? '#fff'  : '#9AAAB8',
+              boxShadow:  s.active ? `0 0 0 3px ${ACCENT_LIGHT}` : 'none',
             }}>
               {s.done ? '✓' : i + 1}
             </div>
@@ -42,11 +43,7 @@ function Steps() {
             </span>
           </div>
           {i < steps.length - 1 && (
-            <div style={{
-              width: 28, height: 2,
-              background: s.done ? ACCENT : '#E2DDD4',
-              margin: '0 3px', marginBottom: 18,
-            }} />
+            <div style={{ width: 28, height: 2, background: s.done ? ACCENT : '#E2DDD4', margin: '0 3px', marginBottom: 18 }} />
           )}
         </div>
       ))}
@@ -54,18 +51,16 @@ function Steps() {
   )
 }
 
-/* ─── Types ────────────────────────────────────────────────────────────────── */
-type UploadedPhoto = {
-  id: string          // library_images row id
-  url: string         // public URL
-  isCover: boolean
-  previewUrl: string  // local object URL for immediate display
+/* ─── Types ─────────────────────────────────────────────────── */
+type Photo = {
+  id:         string    // library_images row id
+  url:        string    // permanent public URL (from DB / storage)
+  isCover:    boolean
+  previewUrl: string    // local blob URL for instant display (same as url for restored photos)
 }
 
-/* ─── Drop Zone ────────────────────────────────────────────────────────────── */
-function DropZone({
-  label, hint, onFiles, children, aspect,
-}: {
+/* ─── Drop Zone ─────────────────────────────────────────────── */
+function DropZone({ label, hint, onFiles, children, aspect }: {
   label: string; hint: string
   onFiles: (files: FileList) => void
   children?: React.ReactNode
@@ -74,28 +69,22 @@ function DropZone({
   const [over, setOver] = useState(false)
   const ref = useRef<HTMLInputElement>(null)
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault(); setOver(false)
-    if (e.dataTransfer.files.length) onFiles(e.dataTransfer.files)
-  }
-
   return (
     <div>
-      <label style={{ fontSize: 12, fontWeight: 600, color: '#3A4A5C', display: 'block', marginBottom: 6, letterSpacing: '.01em' }}>
+      <label style={{ fontSize: 12, fontWeight: 600, color: '#3A4A5C', display: 'block', marginBottom: 6 }}>
         {label}
       </label>
       <div
         onClick={() => ref.current?.click()}
         onDragOver={e => { e.preventDefault(); setOver(true) }}
         onDragLeave={() => setOver(false)}
-        onDrop={handleDrop}
+        onDrop={e => { e.preventDefault(); setOver(false); if (e.dataTransfer.files.length) onFiles(e.dataTransfer.files) }}
         style={{
           border: `2px dashed ${over ? ACCENT : '#E2DDD4'}`,
           borderRadius: 12, padding: children ? 0 : 32,
           textAlign: 'center', cursor: 'pointer',
           background: over ? ACCENT_LIGHT : '#F9F8F5',
-          transition: 'all .15s',
-          aspectRatio: aspect,
+          transition: 'all .15s', aspectRatio: aspect,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           overflow: 'hidden', position: 'relative',
         }}
@@ -103,9 +92,7 @@ function DropZone({
         {children ?? (
           <div>
             <div style={{ fontSize: 36, marginBottom: 8 }}>📷</div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: '#3A4A5C' }}>
-              Click to upload or drag & drop
-            </div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#3A4A5C' }}>Click to upload or drag & drop</div>
             <div style={{ fontSize: 11, color: '#9AAAB8', marginTop: 4 }}>{hint}</div>
           </div>
         )}
@@ -118,53 +105,59 @@ function DropZone({
   )
 }
 
-/* ─── Main page ────────────────────────────────────────────────────────────── */
+/* ─── Page ──────────────────────────────────────────────────── */
 export default function LibraryPhotosPage() {
   const router       = useRouter()
   const searchParams = useSearchParams()
   const libraryId    = searchParams.get('id') ?? ''
 
-  const [cover,     setCover]     = useState<UploadedPhoto | null>(null)
-  const [extras,    setExtras]    = useState<UploadedPhoto[]>([])
-  const [uploading, setUploading] = useState<string | null>(null) // slot key being uploaded
-  const [error,     setError]     = useState('')
-  const [isPending, startTransition] = useTransition()
+  const [cover,        setCover]        = useState<Photo | null>(null)
+  const [extras,       setExtras]       = useState<Photo[]>([])
+  const [uploading,    setUploading]    = useState<string | null>(null)
+  const [loadingPhotos, setLoadingPhotos] = useState(true)
+  const [error,        setError]        = useState('')
+  const [isPending,    startTransition] = useTransition()
 
-  const canContinue = !!cover
+  /* ── On mount: restore already-uploaded photos from DB ── */
+  useEffect(() => {
+    if (!libraryId) { setLoadingPhotos(false); return }
+    getLibraryPhotos(libraryId).then(rows => {
+      rows.forEach(row => {
+        const photo: Photo = { id: row.id, url: row.url, isCover: row.isCover, previewUrl: row.url }
+        if (row.isCover) {
+          setCover(photo)
+        } else {
+          setExtras(prev => [...prev, photo])
+        }
+      })
+      setLoadingPhotos(false)
+    })
+  }, [libraryId])
 
-  /* ── Upload helper ── */
-  const upload = useCallback(async (
-    file: File,
-    isCover: boolean,
-    slotKey: string
-  ) => {
+  /* ── Upload ── */
+  const upload = useCallback(async (file: File, isCover: boolean, slotKey: string) => {
     setUploading(slotKey)
     setError('')
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('libraryId', libraryId)
-    formData.append('isCover', isCover ? '1' : '0')
+    const fd = new FormData()
+    fd.append('file',      file)
+    fd.append('libraryId', libraryId)
+    fd.append('isCover',   isCover ? '1' : '0')
 
-    const res = await uploadLibraryPhoto(formData)
+    const res = await uploadLibraryPhoto(fd)
     setUploading(null)
+    if (res.success === false) { setError(res.error); return }
 
-    if (res.success === false) {
-      setError(res.error)
-      return
-    }
-
-    const photo: UploadedPhoto = {
+    const photo: Photo = {
       id:         res.data.id,
       url:        res.data.url,
-      isCover,
+      isCover:    res.data.isCover,
       previewUrl: URL.createObjectURL(file),
     }
 
-    if (isCover) {
+    if (res.data.isCover) {
       setCover(photo)
     } else {
       setExtras(prev => {
-        // Replace slot if already filled, else append
         const idx = parseInt(slotKey.replace('extra-', ''), 10)
         const next = [...prev]
         next[idx] = photo
@@ -173,34 +166,57 @@ export default function LibraryPhotosPage() {
     }
   }, [libraryId])
 
-  /* ── Delete helper ── */
-  const remove = async (photo: UploadedPhoto, isExtra: boolean, idx?: number) => {
+  /* ── Make cover ── */
+  const makeCover = async (photo: Photo) => {
+    // Optimistic update
+    if (cover) setExtras(prev => [...prev, { ...cover, isCover: false }])
+    setCover({ ...photo, isCover: true })
+    setExtras(prev => prev.filter(p => p.id !== photo.id))
+    await setCoverPhoto(photo.id, libraryId)
+  }
+
+  /* ── Delete ── */
+  const remove = async (photo: Photo, isExtra: boolean, idx?: number) => {
     await deleteLibraryPhoto(photo.id)
     if (!isExtra) {
       setCover(null)
+      // If there are gallery photos, auto-promote the first as cover (mirrors server logic)
+      if (extras.length > 0) {
+        const [next, ...rest] = extras
+        setCover({ ...next, isCover: true })
+        setExtras(rest)
+      }
     } else {
       setExtras(prev => prev.filter((_, i) => i !== idx))
     }
   }
 
-  const handleContinue = () => {
-    startTransition(() => {
-      router.push(`/onboarding/go-live?id=${libraryId}`)
-    })
+  const canContinue = !!cover
+
+  /* ── Loading skeleton ── */
+  if (loadingPhotos) {
+    return (
+      <div style={{
+        minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'linear-gradient(135deg,#F4F7FB 0%,#EDE8DC 100%)',
+        fontFamily: 'DM Sans, sans-serif',
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ width: 36, height: 36, border: `3px solid ${ACCENT_LIGHT}`, borderTopColor: ACCENT, borderRadius: '50%', animation: 'spin .65s linear infinite', margin: '0 auto 12px' }} />
+          <p style={{ fontSize: 14, color: '#6B7689' }}>Loading your photos…</p>
+        </div>
+        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      </div>
+    )
   }
 
-  /* ── Render ── */
   return (
     <div style={{
       minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
       background: 'linear-gradient(135deg,#F4F7FB 0%,#EDE8DC 100%)',
-      fontFamily: 'DM Sans, sans-serif', padding: '24px 16px', position: 'relative',
+      fontFamily: 'DM Sans, sans-serif', padding: '24px 16px',
     }}>
-      <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0 }}>
-        <div style={{ position: 'absolute', width: 500, height: 500, top: -150, right: -100, borderRadius: '50%', background: 'radial-gradient(circle,rgba(13,124,84,.05),transparent 70%)' }} />
-      </div>
-
-      <div style={{ width: '100%', maxWidth: 560, position: 'relative', zIndex: 1 }}>
+      <div style={{ width: '100%', maxWidth: 560 }}>
         <Steps />
 
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
@@ -208,9 +224,7 @@ export default function LibraryPhotosPage() {
             width: 52, height: 52, borderRadius: 14, background: ACCENT,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             margin: '0 auto 16px', boxShadow: '0 4px 18px rgba(13,124,84,.32)', fontSize: 24,
-          }}>
-            📸
-          </div>
+          }}>📸</div>
           <h1 style={{ fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 26, color: '#0A0D12', letterSpacing: '-0.04em', marginBottom: 6 }}>
             Upload library photos
           </h1>
@@ -225,19 +239,11 @@ export default function LibraryPhotosPage() {
           <div style={{ background: ACCENT_LIGHT, border: `1px solid rgba(13,124,84,.2)`, borderRadius: 12, padding: '12px 14px', marginBottom: 20, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
             <span style={{ fontSize: 16, flexShrink: 0 }}>💡</span>
             <p style={{ fontSize: 13, color: '#0A5E3F', margin: 0, lineHeight: 1.5 }}>
-              Upload at least 1 cover photo to go live. Aim for <strong>4+ photos</strong> — main hall, entrance, seating area, and amenities. JPG/PNG/WebP, max 10 MB each.
+              Upload at least 1 cover photo to go live. Aim for <strong>4+ photos</strong> — main hall, entrance, seating area, amenities. JPG/PNG/WebP, max 10 MB each.
             </p>
           </div>
 
-          {/* Storage note */}
-          <div style={{ background: '#FEF3E2', border: '1px solid rgba(201,106,0,.2)', borderRadius: 12, padding: '10px 14px', marginBottom: 20, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-            <span style={{ fontSize: 14, flexShrink: 0 }}>🗄️</span>
-            <p style={{ fontSize: 12, color: '#92400E', margin: 0, lineHeight: 1.5 }}>
-              <strong>Storage setup required:</strong> Create a Supabase Storage bucket named <code style={{ background: 'rgba(0,0,0,.08)', padding: '1px 5px', borderRadius: 4 }}>library-images</code> and set it to <strong>Public</strong>. Add an RLS policy: owners can INSERT/DELETE their own library's images.
-            </p>
-          </div>
-
-          {/* Cover photo */}
+          {/* Cover photo slot */}
           <div style={{ marginBottom: 24 }}>
             <DropZone
               label="Cover photo *"
@@ -252,65 +258,69 @@ export default function LibraryPhotosPage() {
                 </div>
               ) : cover ? (
                 <>
-                  <img src={cover.previewUrl} alt="cover" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <Image src={cover.previewUrl} alt="cover" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   <button
                     onClick={e => { e.stopPropagation(); remove(cover, false) }}
-                    style={{
-                      position: 'absolute', top: 8, right: 8,
-                      width: 28, height: 28, borderRadius: '50%',
-                      background: '#C5282C', border: 'none', color: '#fff',
-                      fontSize: 14, cursor: 'pointer', display: 'flex',
-                      alignItems: 'center', justifyContent: 'center',
-                    }}
+                    style={{ position: 'absolute', top: 8, right: 8, width: 28, height: 28, borderRadius: '50%', background: '#C5282C', border: 'none', color: '#fff', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                   >×</button>
-                  <div style={{
-                    position: 'absolute', bottom: 8, left: 8,
-                    background: ACCENT, color: '#fff', fontSize: 10, fontWeight: 700,
-                    padding: '3px 8px', borderRadius: 6, letterSpacing: '.04em',
-                  }}>COVER</div>
+                  <div style={{ position: 'absolute', bottom: 8, left: 8, background: ACCENT, color: '#fff', fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6, letterSpacing: '.04em' }}>
+                    COVER
+                  </div>
                 </>
               ) : null}
             </DropZone>
           </div>
 
-          {/* Additional photos grid */}
+          {/* Additional photos */}
           <div style={{ marginBottom: 24 }}>
-            <label style={{ fontSize: 12, fontWeight: 600, color: '#3A4A5C', display: 'block', marginBottom: 8, letterSpacing: '.01em' }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#3A4A5C', display: 'block', marginBottom: 8 }}>
               Additional photos <span style={{ color: '#9AAAB8', fontWeight: 400 }}>(up to 8)</span>
+              <span style={{ color: '#9AAAB8', fontWeight: 400, marginLeft: 6 }}>— tap any photo to make it the cover</span>
             </label>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-              {/* Uploaded slots */}
+              {/* Uploaded extra slots */}
               {extras.map((photo, idx) => (
-                <div key={photo.id} style={{
-                  aspectRatio: '1', borderRadius: 10, overflow: 'hidden',
-                  position: 'relative', background: '#E2DDD4',
-                }}>
-                  <img src={photo.previewUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <div key={photo.id} style={{ aspectRatio: '1', borderRadius: 10, overflow: 'hidden', position: 'relative', background: '#E2DDD4', cursor: 'pointer' }}>
+                  <Image
+  src={photo.previewUrl}
+  alt=""
+  fill
+  className="object-cover"
+  onClick={() => makeCover(photo)}
+  title="Tap to make cover"
+/>
+                  {/* Make cover overlay on hover */}
+                  <div
+                    onClick={() => makeCover(photo)}
+                    style={{ position: 'absolute', inset: 0, background: 'rgba(13,124,84,.0)', display: 'flex', alignItems: 'flex-end', padding: 4, transition: 'background .15s' }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'rgba(13,124,84,.35)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'rgba(13,124,84,.0)')}
+                  >
+                    <span style={{ fontSize: 9, color: '#fff', fontWeight: 700, opacity: 0, transition: 'opacity .15s' }}
+                      onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
+                      onMouseLeave={e => (e.currentTarget.style.opacity = '0')}
+                    >
+                      Make cover
+                    </span>
+                  </div>
                   <button
-                    onClick={() => remove(photo, true, idx)}
-                    style={{
-                      position: 'absolute', top: 4, right: 4,
-                      width: 20, height: 20, borderRadius: '50%',
-                      background: '#C5282C', border: 'none', color: '#fff',
-                      fontSize: 12, cursor: 'pointer', display: 'flex',
-                      alignItems: 'center', justifyContent: 'center', lineHeight: 1,
-                    }}
+                    onClick={e => { e.stopPropagation(); remove(photo, true, idx) }}
+                    style={{ position: 'absolute', top: 4, right: 4, width: 20, height: 20, borderRadius: '50%', background: '#C5282C', border: 'none', color: '#fff', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}
                   >×</button>
                 </div>
               ))}
 
-              {/* Loading slot */}
-              {uploading && uploading.startsWith('extra-') && (
-                <div style={{
-                  aspectRatio: '1', borderRadius: 10, background: ACCENT_LIGHT,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
+              {/* Uploading slot */}
+              {uploading?.startsWith('extra-') && (
+                <div style={{ aspectRatio: '1', borderRadius: 10, background: ACCENT_LIGHT, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <div style={{ width: 20, height: 20, border: `2px solid ${ACCENT_LIGHT}`, borderTopColor: ACCENT, borderRadius: '50%', animation: 'spin .65s linear infinite' }} />
                 </div>
               )}
 
-              {/* Empty slots (up to 8 total) */}
-              {extras.length < 8 && Array.from({ length: Math.min(8 - extras.length - (uploading?.startsWith('extra-') ? 1 : 0), 8) }).map((_, i) => (
+              {/* Empty slots */}
+              {extras.length < 8 && Array.from({
+                length: Math.min(8 - extras.length - (uploading?.startsWith('extra-') ? 1 : 0), 8),
+              }).map((_, i) => (
                 <label key={`empty-${i}`} style={{
                   aspectRatio: '1', borderRadius: 10,
                   border: '2px dashed #E2DDD4', display: 'flex',
@@ -318,13 +328,10 @@ export default function LibraryPhotosPage() {
                   fontSize: 22, color: '#9AAAB8', cursor: 'pointer',
                   background: '#F9F8F5', transition: 'all .15s',
                 }}>
-                  <input
-                    type="file" accept="image/jpeg,image/png,image/webp"
-                    style={{ display: 'none' }}
+                  <input type="file" accept="image/jpeg,image/png,image/webp" style={{ display: 'none' }}
                     onChange={e => {
-                      if (e.target.files?.[0]) {
+                      if (e.target.files?.[0])
                         upload(e.target.files[0], false, `extra-${extras.length + i}`)
-                      }
                     }}
                   />
                   +
@@ -332,6 +339,16 @@ export default function LibraryPhotosPage() {
               ))}
             </div>
           </div>
+
+          {/* Photo count badge */}
+          {(cover || extras.length > 0) && (
+            <div style={{ textAlign: 'center', marginBottom: 16 }}>
+              <span style={{ fontSize: 12, color: '#6B7689' }}>
+                {(cover ? 1 : 0) + extras.length} photo{((cover ? 1 : 0) + extras.length) !== 1 ? 's' : ''} uploaded
+                {(cover ? 1 : 0) + extras.length >= 4 && <span style={{ color: ACCENT, marginLeft: 6 }}>✓ Great selection!</span>}
+              </span>
+            </div>
+          )}
 
           {error && (
             <div style={{ background: '#FDEAEA', border: '1px solid rgba(212,43,43,.2)', borderRadius: 10, padding: '10px 14px', marginBottom: 16, display: 'flex', gap: 8 }}>
@@ -345,7 +362,7 @@ export default function LibraryPhotosPage() {
           <div style={{ display: 'flex', gap: 10 }}>
             <button
               type="button"
-              onClick={() => router.back()}
+              onClick={() => router.push(`/onboarding/add-library?id=${libraryId}`)}
               style={{
                 flex: 1, padding: '13px 0', borderRadius: 10, fontSize: 14, fontWeight: 600,
                 fontFamily: 'DM Sans, sans-serif', border: '1.5px solid #E2DDD4',
@@ -355,7 +372,7 @@ export default function LibraryPhotosPage() {
               ← Back
             </button>
             <button
-              onClick={handleContinue}
+              onClick={() => startTransition(() => router.push(`/onboarding/go-live?id=${libraryId}`))}
               disabled={!canContinue || isPending}
               style={{
                 flex: 2, padding: '13px 0', borderRadius: 10, fontSize: 15,
@@ -364,7 +381,6 @@ export default function LibraryPhotosPage() {
                 cursor: canContinue ? 'pointer' : 'not-allowed',
                 boxShadow: canContinue ? '0 4px 16px rgba(13,124,84,.3)' : 'none',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                transition: 'all .2s',
               }}
               onMouseEnter={e => { if (canContinue) e.currentTarget.style.background = ACCENT_DARK }}
               onMouseLeave={e => { if (canContinue) e.currentTarget.style.background = ACCENT }}

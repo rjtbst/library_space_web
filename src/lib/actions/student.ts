@@ -157,15 +157,19 @@ export type StudentStats = {
 }
 
 export type ExploreFilters = {
-  lat?:       number
-  lng?:       number
-  search?:    string
-  city?:      string
-  area?:      string
-  open_now?:  boolean
-  amenities?: string[]
-  page?:      number
-  limit?:     number
+  lat?:           number
+  lng?:           number
+  search?:        string
+  city?:          string          // explicit city filter from URL param
+  area?:          string
+  open_now?:      boolean
+  amenities?:     string[]
+  page?:          number
+  limit?:         number
+  radius_km?:     number          // GPS bounding box radius; default 50 km
+  // ↓ passed from the server page when no lat/lng and no ?city param
+  profile_city?:  string         // from users.city
+  profile_state?: string         // from users.state — for state-level fallback
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -252,17 +256,44 @@ function buildCard(
 ══════════════════════════════════════════════════════════════════════════ */
 
 export async function exploreLibraries(filters: ExploreFilters = {}): Promise<{
-  libraries: LibraryCard[]
-  total:     number
-  cities:    string[]
+  libraries:    LibraryCard[]
+  total:        number
+  cities:       string[]
+  // What filter mode is active — used by ExploreClient to show the right banner
+  location_mode: 'gps' | 'profile_city' | 'profile_state' | 'all'
 }> {
   const supabase = await createServerSupabaseClient()
   const {
     lat, lng, search, city, area, open_now,
     amenities = [], page = 1, limit = 12,
+    profile_city, profile_state,
+    radius_km = 50,
   } = filters
 
-  // Build base query — all columns that exist in schema
+  /**
+   * LOCATION MODE PRIORITY
+   * ──────────────────────
+   * 1. lat+lng present in URL  → GPS mode  (sort nearest first)
+   * 2. ?city= param present    → explicit city filter (user picked a city)
+   * 3. profile_city set        → auto-filter by student's home city
+   * 4. profile_state set       → auto-filter by student's home state
+   * 5. nothing                 → show all, sort by rating
+   */
+  const hasGPS          = lat != null && lng != null
+  const hasExplicitCity = !!city
+  const locationMode: 'gps' | 'profile_city' | 'profile_state' | 'all' =
+    hasGPS          ? 'gps'
+    : hasExplicitCity ? 'all'          // user overrode — treat as all with city filter
+    : profile_city   ? 'profile_city'
+    : profile_state  ? 'profile_state'
+    : 'all'
+
+  // Resolve effective city/state filter
+  const effectiveCity  = city          // explicit URL param wins
+    ?? (locationMode === 'profile_city'  ? profile_city  : undefined)
+  const effectiveState = locationMode === 'profile_state' ? profile_state : undefined
+
+  // Build base query
   let query = supabase
     .from('libraries')
     .select(
@@ -275,20 +306,44 @@ export async function exploreLibraries(filters: ExploreFilters = {}): Promise<{
     )
     .eq('is_active', true)
 
-  if (city)   query = query.ilike('city', `%${city}%`)
-  if (area)   query = query.ilike('area', `%${area}%`)
-  if (search) query = query.or(
-    `name.ilike.%${search}%,city.ilike.%${search}%,area.ilike.%${search}%,address.ilike.%${search}%`,
-  )
+  // ── Bounding box filter (GPS mode only) ─────────────────────────────────
+  // Cuts libraries in distant cities before any data reaches JS.
+  // 1° latitude  ≈ 111 km (constant).
+  // 1° longitude ≈ 111 km × cos(lat) — shrinks toward the poles, so we widen
+  //   the lng delta slightly to avoid clipping edge cases near Tropic of Cancer.
+  // The haversine sort below is the precise tiebreaker; this is just a fast
+  // pre-filter. Libraries that have NULL lat/lng are excluded intentionally —
+  // they can't be sorted by distance anyway.
+  if (hasGPS && lat != null && lng != null) {
+    const latDelta = radius_km / 111
+    const lngDelta = radius_km / (111 * Math.cos((lat * Math.PI) / 180))
+    query = (query as any)
+      .not('latitude',  'is', null)
+      .not('longitude', 'is', null)
+      .gte('latitude',  lat - latDelta)
+      .lte('latitude',  lat + latDelta)
+      .gte('longitude', lng - lngDelta)
+      .lte('longitude', lng + lngDelta)
+  }
+  // ────────────────────────────────────────────────────────────────────────
+
+  if (effectiveCity)  query = (query as any).ilike('city',  `%${effectiveCity}%`)
+  if (effectiveState) query = (query as any).ilike('state', `%${effectiveState}%`)
+  if (area)           query = query.ilike('area',  `%${area}%`)
+  if (search) {
+    query = query.or(
+      `name.ilike.%${search}%,city.ilike.%${search}%,area.ilike.%${search}%,address.ilike.%${search}%`,
+    )
+  }
 
   let allRows: any[]
-  let total: number
+  let total:   number
 
-  if (lat != null && lng != null) {
-    // Fetch up to 200, sort by distance in JS (no PostGIS)
-    const { data, count } = await query
-      .order('rating', { ascending: false })
-      .limit(200)
+  if (hasGPS) {
+    // Bounding box already limits the candidate set to nearby libraries.
+    // Fetch up to 200 of those to sort by exact haversine distance in JS.
+    // In practice this will be a handful of rows for most Indian cities.
+    const { data, count } = await query.order('rating', { ascending: false }).limit(200)
     allRows = data ?? []
     total   = count ?? 0
   } else {
@@ -300,7 +355,7 @@ export async function exploreLibraries(filters: ExploreFilters = {}): Promise<{
     total   = count ?? 0
   }
 
-  // Cities dropdown
+  // Cities dropdown (always all active cities for the switcher)
   const { data: citiesData } = await supabase
     .from('libraries')
     .select('city')
@@ -310,12 +365,11 @@ export async function exploreLibraries(filters: ExploreFilters = {}): Promise<{
     ...new Set((citiesData ?? []).map((c: any) => c.city as string).filter(Boolean)),
   ]
 
-  if (!allRows.length) return { libraries: [], total: 0, cities }
+  if (!allRows.length) return { libraries: [], total: 0, cities, location_mode: locationMode }
 
   const libIds = allRows.map((l) => l.id as string)
   const now    = nowIST()
 
-  // Active bookings right now (for live occupancy)
   const { data: activeBkgs } = await supabase
     .from('bookings')
     .select('seat_id, library_id')
@@ -331,7 +385,6 @@ export async function exploreLibraries(filters: ExploreFilters = {}): Promise<{
     bookedByLib[bl.library_id].add(bl.seat_id)
   }
 
-  // Plans per library
   const { data: planLibsData } = await supabase
     .from('plan_libraries')
     .select('library_id, plans(id, name, price, duration_days, session_limit, scope)')
@@ -361,7 +414,7 @@ export async function exploreLibraries(filters: ExploreFilters = {}): Promise<{
       return true
     })
 
-  if (lat != null && lng != null) {
+  if (hasGPS) {
     cards.sort((a, b) => {
       if (a.distance_km == null && b.distance_km == null) return b.rating - a.rating
       if (a.distance_km == null) return  1
@@ -373,8 +426,9 @@ export async function exploreLibraries(filters: ExploreFilters = {}): Promise<{
     cards = cards.slice(from, from + limit)
   }
 
-  return { libraries: cards, total, cities }
+  return { libraries: cards, total, cities, location_mode: locationMode }
 }
+
 
 /* ══════════════════════════════════════════════════════════════════════════
    LIBRARY DETAIL

@@ -14,7 +14,6 @@ export default async function BookingsPage({
   const { lib } = await searchParams
 
   const supabase = await createServerSupabaseClient()
-  
 
   const libraryId = lib ?? await getFirstLibraryId()
   if (!libraryId) redirect('/onboarding/add-library')
@@ -27,6 +26,7 @@ export default async function BookingsPage({
 
   return (
     <BookingsClient
+      key={libraryId}
       bookings={bookings}
       libraryName={libRow.data?.name ?? ''}
       libraryId={libraryId}

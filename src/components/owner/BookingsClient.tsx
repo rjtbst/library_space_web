@@ -5,7 +5,8 @@ import type { TodayBooking, SlotConfig } from '@/lib/actions/owner'
 import { checkInBooking } from '@/lib/actions/owner'
 import { fmtTime, getISTHour, fmtISTDate } from '@/lib/utils/format'
 import { ACCENT, ACCENT_LIGHT, BLUE, BLUE_LIGHT } from '@/lib/constants/theme'
-import { Card, PageHeader, EmptyState, StatusBadge } from '@/components/owner/ui'
+import { Card, PageHeader, EmptyState, StatusBadge, LibraryPicker } from '@/components/owner/ui'
+import { useOwner } from '@/contexts/OwnerContext'
 
 export default function BookingsClient({
   bookings: initial, libraryName, libraryId, slots,
@@ -15,6 +16,7 @@ export default function BookingsClient({
   libraryId:   string
   slots:       SlotConfig[]
 }) {
+  const { libraries } = useOwner()
   const [bookings, setBookings]      = useState(initial)
   const [activeSlot, setActiveSlot]  = useState('All')
   const [isPending, startTransition] = useTransition()
@@ -70,6 +72,13 @@ export default function BookingsClient({
             📷 QR Scanner
           </a>
         }
+      />
+
+      {/* Library picker */}
+      <LibraryPicker
+        libraries={libraries}
+        currentId={libraryId}
+        buildHref={id => `/dashboard/bookings?lib=${id}`}
       />
 
       {/* Slot tabs */}

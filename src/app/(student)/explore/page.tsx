@@ -26,7 +26,13 @@ export default async function ExplorePage({ searchParams }: Props) {
   const lat = searchParams.lat ? parseFloat(searchParams.lat) : undefined
   const lng = searchParams.lng ? parseFloat(searchParams.lng) : undefined
 
-  const [{ libraries, total, cities }, allAmenities, profile] = await Promise.all([
+  // Fetch profile first so we can pass city/state as fallback to exploreLibraries
+  const profile = await getStudentProfile()
+
+  const hasGPS         = lat != null && lng != null
+  const hasExplicitCity = !!searchParams.city
+
+  const [{ libraries, total, cities, location_mode }, allAmenities] = await Promise.all([
     exploreLibraries({
       lat,
       lng,
@@ -35,11 +41,15 @@ export default async function ExplorePage({ searchParams }: Props) {
       area:     searchParams.area,
       open_now: searchParams.open_now === '1',
       amenities,
+      radius_km : 50,
       page,
       limit: 12,
+      // Only pass profile fallbacks when no GPS and no explicit city filter —
+      // otherwise the user is actively filtering and we should respect that
+      profile_city:  (!hasGPS && !hasExplicitCity) ? (profile?.city  ?? '') : '',
+      profile_state: (!hasGPS && !hasExplicitCity) ? (profile?.state ?? '') : '',
     }),
     getAllAmenities(),
-    getStudentProfile(),
   ])
 
   return (
@@ -48,7 +58,9 @@ export default async function ExplorePage({ searchParams }: Props) {
       total={total}
       cities={cities}
       allAmenities={allAmenities}
-      profileCity={profile?.city ?? null}
+      locationMode={location_mode}
+      profileCity={profile?.city   ?? null}
+      profileState={profile?.state ?? null}
       initialFilters={{
         q:         searchParams.q      ?? '',
         city:      searchParams.city   ?? '',

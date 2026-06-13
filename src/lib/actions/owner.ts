@@ -540,6 +540,72 @@ export async function addSeatRow(
   return { success: true, data: undefined }
 }
 
+export async function editSeatRow(
+  libraryId: string,
+  oldLabel:  string,
+  newLabel:  string,
+  newCount:  number,
+): Promise<ActionResult> {
+  const { supabase, user } = await getSupabaseUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  const { data: lib } = await supabase
+    .from('libraries').select('owner_id').eq('id', libraryId).maybeSingle()
+  if ((lib as any)?.owner_id !== user.id) return { success: false, error: 'Access denied' }
+
+  const normalOld = oldLabel.toUpperCase().trim()
+  const normalNew = newLabel.toUpperCase().trim()
+  if (!/^[A-Z]$/.test(normalNew)) return { success: false, error: 'Row label must be a single letter A–Z' }
+  if (newCount < 1 || newCount > 50) return { success: false, error: 'Seats must be between 1 and 50' }
+
+  if (normalNew !== normalOld) {
+    const { data: clash } = await supabase
+      .from('seats').select('id').eq('library_id', libraryId).eq('row_label', normalNew).limit(1)
+    if (clash?.length) return { success: false, error: `Row ${normalNew} already exists` }
+  }
+
+  const { data: existing, error: fetchErr } = await supabase
+    .from('seats')
+    .select('id, column_number')
+    .eq('library_id', libraryId)
+    .eq('row_label', normalOld)
+    .order('column_number')
+
+  if (fetchErr || !existing) return { success: false, error: 'Could not fetch row seats' }
+
+  // Rename first if needed
+  if (normalNew !== normalOld) {
+    const { error: renameErr } = await supabase
+      .from('seats')
+      .update({ row_label: normalNew })
+      .eq('library_id', libraryId)
+      .eq('row_label', normalOld)
+    if (renameErr) { logError('editSeatRow', 'Rename failed', renameErr); return { success: false, error: renameErr.message } }
+  }
+
+  const currentCount = existing.length
+
+  if (newCount > currentCount) {
+    const toAdd = Array.from({ length: newCount - currentCount }, (_, i) => ({
+      library_id:    libraryId,
+      row_label:     normalNew,
+      column_number: currentCount + i + 1,
+      is_active:     true,
+    }))
+    const { error: insertErr } = await supabase.from('seats').insert(toAdd)
+    if (insertErr) { logError('editSeatRow', 'Insert failed', insertErr); return { success: false, error: insertErr.message } }
+  } else if (newCount < currentCount) {
+    const toRemove = existing.slice(newCount).map((s) => s.id)
+    if (toRemove.length) {
+      const { error: deleteErr } = await supabase.from('seats').delete().in('id', toRemove)
+      if (deleteErr) { logError('editSeatRow', 'Delete failed', deleteErr); return { success: false, error: deleteErr.message } }
+    }
+  }
+
+  log('editSeatRow', `library=${libraryId} ${normalOld}→${normalNew} seats=${newCount}`)
+  revalidatePath('/dashboard/seat-manager')
+  return { success: true, data: undefined }
+}
 /* ═══════════════════════════════════════════════════════════════════════════
    MANUAL WALK-IN BOOKING
 ═══════════════════════════════════════════════════════════════════════════ */
@@ -950,3 +1016,111 @@ export const getFirstLibraryId = cache(async (): Promise<string | null> => {
     .order('created_at', { ascending: true }).limit(1).maybeSingle()
   return (data as any)?.id ?? null
 })
+
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIBRARY EDIT — INFO
+   ─────────────────────────────────────────────────────────────────────────
+   Append this entire block to the bottom of src/lib/actions/owner.ts
+═══════════════════════════════════════════════════════════════════════════ */
+
+export async function updateLibraryInfo(
+  libraryId: string,
+  patch: { name: string; city: string; area: string },
+): Promise<ActionResult> {
+  const { supabase, user } = await getSupabaseUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  // Verify ownership
+  const { data: lib } = await supabase
+    .from('libraries').select('owner_id').eq('id', libraryId).maybeSingle()
+  if ((lib as any)?.owner_id !== user.id) return { success: false, error: 'Access denied' }
+
+  const { error } = await supabase
+    .from('libraries')
+    .update({ name: patch.name, city: patch.city, area: patch.area })
+    .eq('id', libraryId)
+
+  if (error) { logError('updateLibraryInfo', 'Update failed', error); return { success: false, error: error.message } }
+
+  log('updateLibraryInfo', `library=${libraryId} name=${patch.name}`)
+  revalidatePath('/dashboard/my-libraries')
+  revalidatePath('/dashboard')
+  return { success: true, data: undefined }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIBRARY EDIT — AMENITIES
+═══════════════════════════════════════════════════════════════════════════ */
+
+/** Returns all amenities in the system + which ones are selected for this library */
+export async function getAmenities(
+  libraryId: string,
+): Promise<{ all: { id: string; name: string }[]; selected: string[] }> {
+  const { supabase, user } = await getSupabaseUser()
+  if (!user) return { all: [], selected: [] }
+
+  const [allRes, selectedRes] = await Promise.all([
+    supabase.from('amenities').select('id, name').order('name'),
+    supabase.from('library_amenities').select('amenity_id').eq('library_id', libraryId),
+  ])
+
+  return {
+    all:      (allRes.data ?? []).map(a => ({ id: a.id, name: a.name ?? '' })),
+    selected: (selectedRes.data ?? []).map(r => r.amenity_id),
+  }
+}
+
+/** Replaces the full set of amenities for a library (diff + upsert/delete) */
+export async function updateLibraryAmenities(
+  libraryId:    string,
+  amenityIds:   string[],
+): Promise<ActionResult> {
+  const { supabase, user } = await getSupabaseUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  const { data: lib } = await supabase
+    .from('libraries').select('owner_id').eq('id', libraryId).maybeSingle()
+  if ((lib as any)?.owner_id !== user.id) return { success: false, error: 'Access denied' }
+
+  // Fetch current links
+  const { data: current } = await supabase
+    .from('library_amenities').select('amenity_id').eq('library_id', libraryId)
+
+  const currentIds = new Set((current ?? []).map(r => r.amenity_id))
+  const nextIds    = new Set(amenityIds)
+
+  const toAdd    = amenityIds.filter(id => !currentIds.has(id))
+  const toRemove = [...currentIds].filter(id => !nextIds.has(id))
+
+  if (toAdd.length) {
+    const { error } = await supabase
+      .from('library_amenities')
+      .insert(toAdd.map(amenity_id => ({ library_id: libraryId, amenity_id })))
+    if (error) {
+      logError('updateLibraryAmenities', 'Insert failed', error)
+      return { success: false, error: error.message }
+    }
+  }
+
+  if (toRemove.length) {
+    const { error } = await supabase
+      .from('library_amenities')
+      .delete()
+      .eq('library_id', libraryId)
+      .in('amenity_id', toRemove)
+    if (error) {
+      logError('updateLibraryAmenities', 'Delete failed', error)
+      return { success: false, error: error.message }
+    }
+  }
+
+  log('updateLibraryAmenities', `library=${libraryId} added=${toAdd.length} removed=${toRemove.length}`)
+  revalidatePath('/dashboard/my-libraries')
+  return { success: true, data: undefined }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIBRARY EDIT — PHOTOS
+═══════════════════════════════════════════════════════════════════════════ */

@@ -20,7 +20,15 @@ const EMPTY_FORM = {
   price: '', discount: '',
 }
 
-function daysFromIndices(indices: number[]): string {
+// For STORAGE — individual day names, comma-separated (no range compression)
+// so that openEdit reverse-parse works correctly for any combination of days
+function daysToString(indices: number[]): string {
+  if (indices.length === 0) return 'No days'
+  return [...indices].sort().map(i => DAYS[i]).join(', ')
+}
+
+// For DISPLAY only — range compression for readability in the table
+function daysDisplay(indices: number[]): string {
   if (indices.length === 7) return 'Mon–Sun'
   if (indices.length === 0) return 'No days'
   const sorted = [...indices].sort()
@@ -59,7 +67,18 @@ export default function SlotConfigClient({
   }, [])
 
   const openEdit = useCallback((slot: SlotConfig) => {
-    const dayIndices = DAYS.map((_, i) => i).filter(i => slot.days.includes(DAYS[i]))
+    // Handles both "Mon, Tue, Wed" (new individual format) and
+    // "Mon–Fri" (legacy compressed format) so existing DB data still works
+    const dayIndices = DAYS.map((_, i) => i).filter(i =>
+      slot.days.split(',').some(segment => {
+        const seg = segment.trim()
+        if (seg.includes('–')) {
+          const [from, to] = seg.split('–').map(d => DAYS.indexOf(d.trim()))
+          return from !== -1 && to !== -1 && i >= from && i <= to
+        }
+        return seg === DAYS[i]
+      })
+    )
     setEditing(slot)
     setForm({ start: slot.start, end: slot.end, days: dayIndices, price: String(slot.price), discount: String(slot.discount || '') })
     setError(''); setShowForm(true)
@@ -83,7 +102,7 @@ export default function SlotConfigClient({
     const payload = {
       id:        editing?.id,
       start:     form.start, end: form.end,
-      days:      daysFromIndices(form.days),
+      days:      daysToString(form.days),   // ← was daysFromIndices (compressed); now stores individual names
       price:     Number(form.price),
       discount:  Number(form.discount || 0),
       is_active: editing?.is_active ?? true,
@@ -274,7 +293,7 @@ export default function SlotConfigClient({
               background: ACCENT_LIGHT, border: `1px solid rgba(13,124,84,.2)`,
               borderRadius: 10, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: '#0A5E3F',
             }}>
-              <strong>Preview:</strong> {form.start}–{form.end} · {daysFromIndices(form.days)} · ₹{form.price}/hr
+              <strong>Preview:</strong> {form.start}–{form.end} · {daysDisplay(form.days)} · ₹{form.price}/hr
               {form.discount ? ` · ₹${form.discount} last-min discount` : ''}
             </div>
           )}

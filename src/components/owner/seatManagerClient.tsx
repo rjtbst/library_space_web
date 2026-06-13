@@ -3,7 +3,7 @@
 import { useState, useTransition, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import type { SeatRow } from '@/lib/actions/owner'
-import { toggleSeatActive, addSeatRow, manualBookSeat, forceFreeSeat } from '@/lib/actions/owner'
+import { toggleSeatActive, addSeatRow, manualBookSeat, forceFreeSeat, editSeatRow } from '@/lib/actions/owner'
 import { toISTInputValue, inputToDB, fmtIST, fmtInputPreview } from '@/lib/ist'
 import { useOwner } from '@/contexts/OwnerContext'
 import { useToast } from '@/hooks/useToast'
@@ -60,6 +60,11 @@ export default function SeatManagerClient({
   const [newRowLabel, setNewRowLabel]  = useState('')
   const [newRowCols, setNewRowCols]    = useState(8)
   const [confirmForceFree, setConfirmForceFree] = useState(false)
+
+  // Edit row state
+  const [editingRow, setEditingRow]     = useState<string | null>(null)
+  const [editRowLabel, setEditRowLabel] = useState('')
+  const [editRowCount, setEditRowCount] = useState(8)
 
   const [bookForm, setBookForm] = useState({
     userName:    '',
@@ -179,6 +184,20 @@ export default function SeatManagerClient({
     })
   }, [libraryId, newRowLabel, newRowCols, showToast, router])
 
+  const handleEditRow = useCallback(() => {
+    if (!editingRow) return
+    startTransition(async () => {
+      const res = await editSeatRow(libraryId, editingRow, editRowLabel, editRowCount)
+      if (res.success) {
+        showToast(`Row ${editingRow} updated`)
+        setEditingRow(null)
+        router.refresh()
+      } else {
+        showToast((res as any).error ?? 'Update failed')
+      }
+    })
+  }, [editingRow, editRowLabel, editRowCount, libraryId, showToast, router])
+
   const selectSeat = useCallback((seat: SeatRow) => {
     setSelected(s => s?.id === seat.id ? null : seat)
     setConfirmForceFree(false)
@@ -239,7 +258,7 @@ export default function SeatManagerClient({
       }}>
         <span>💡</span>
         <span style={{ fontSize: 13, color: '#1447D4' }}>
-          Click any seat to select · All times are IST (Asia/Kolkata)
+          Click any seat to select · Use ✏ edit next to a row to add/remove seats · All times are IST (Asia/Kolkata)
         </span>
       </div>
 
@@ -264,6 +283,7 @@ export default function SeatManagerClient({
               .sort((a, b) => a.column_number - b.column_number)
             return (
               <div key={row} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                {/* Row label badge (static) */}
                 <div style={{
                   width: 24, height: 24, borderRadius: 6, background: '#F4F7FB',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -271,6 +291,29 @@ export default function SeatManagerClient({
                 }}>
                   {row}
                 </div>
+
+                {/* Edit row button */}
+                <button
+                  onClick={() => {
+                    const count = seats.filter(s => s.row_label === row).length
+                    setEditingRow(r => r === row ? null : row)
+                    setEditRowLabel(row)
+                    setEditRowCount(count)
+                    setSelected(null)
+                  }}
+                  title={`Edit row ${row}`}
+                  style={{
+                    padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                    border: `1.5px solid ${editingRow === row ? ACCENT : BORDER}`,
+                    background: editingRow === row ? ACCENT_LIGHT : BG_CARD,
+                    color: editingRow === row ? ACCENT : TEXT_MUTED,
+                    cursor: 'pointer', flexShrink: 0, fontFamily: FONT_BODY,
+                    transition: 'all .12s',
+                  }}
+                >
+                  {editingRow === row ? '✕ close' : '✏ edit'}
+                </button>
+
                 <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
                   {rowSeats.map((seat, idx) => {
                     const sc         = SEAT_COLORS[seat.live_status] ?? SEAT_COLORS.free
@@ -312,6 +355,103 @@ export default function SeatManagerClient({
           </div>
         </div>
       </Card>
+
+      {/* ── Edit row panel ───────────────────────────────────────────────── */}
+      {editingRow && (
+        <Card padding="18px 20px" style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: TEXT_PRIMARY }}>
+              Edit Row {editingRow}
+            </div>
+            <button
+              onClick={() => setEditingRow(null)}
+              style={{
+                padding: '4px 10px', borderRadius: 7, fontSize: 12, fontWeight: 600,
+                border: `1.5px solid ${BORDER}`, background: BG_CARD, color: TEXT_SECONDARY,
+                cursor: 'pointer', fontFamily: FONT_BODY,
+              }}
+            >
+              ✕
+            </button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: TEXT_SECONDARY, marginBottom: 5 }}>
+                Row label (A–Z)
+              </div>
+              <input
+                value={editRowLabel}
+                onChange={e => setEditRowLabel(e.target.value.slice(0, 1).toUpperCase())}
+                placeholder="e.g. G"
+                maxLength={1}
+                style={INP_STYLE}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: TEXT_SECONDARY, marginBottom: 5 }}>
+                Number of seats
+                <span style={{ fontWeight: 400, color: TEXT_MUTED, marginLeft: 6 }}>
+                  (currently {seats.filter(s => s.row_label === editingRow).length})
+                </span>
+              </div>
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={editRowCount}
+                onChange={e => setEditRowCount(Number(e.target.value))}
+                style={INP_STYLE}
+              />
+            </div>
+          </div>
+
+          {/* Trim warning */}
+          {editRowCount < seats.filter(s => s.row_label === editingRow).length && (
+            <div style={{
+              background: '#FEF3E2', border: '1px solid #FCD34D',
+              borderRadius: 9, padding: '9px 13px', marginBottom: 12,
+              fontSize: 12, color: '#92400E', display: 'flex', gap: 8, alignItems: 'flex-start',
+            }}>
+              <span style={{ flexShrink: 0 }}>⚠️</span>
+              <span>
+                Reducing from {seats.filter(s => s.row_label === editingRow).length} to {editRowCount} seats
+                will <strong>permanently delete</strong> the last{' '}
+                {seats.filter(s => s.row_label === editingRow).length - editRowCount} seat(s).
+                Active bookings on those seats are not cancelled automatically.
+              </span>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => setEditingRow(null)}
+              style={{
+                flex: 1, padding: '10px 0', borderRadius: 9, fontSize: 13, fontWeight: 600,
+                border: `1.5px solid ${BORDER}`, background: BG_CARD, color: '#3A4A5C',
+                cursor: 'pointer', fontFamily: FONT_BODY,
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleEditRow}
+              disabled={!editRowLabel || isPending}
+              style={{
+                flex: 2, padding: '10px 0', borderRadius: 9, fontSize: 14, fontWeight: 700,
+                border: 'none',
+                background: editRowLabel ? ACCENT : '#C8D4C8',
+                color: '#fff',
+                cursor: editRowLabel && !isPending ? 'pointer' : 'not-allowed',
+                fontFamily: FONT_DISPLAY,
+                opacity: isPending ? 0.7 : 1,
+              }}
+            >
+              {isPending ? 'Saving…' : `Save Row ${editRowLabel || '?'}`}
+            </button>
+          </div>
+        </Card>
+      )}
 
       {/* ── Seat editor panel ────────────────────────────────────────────── */}
       {selected && (

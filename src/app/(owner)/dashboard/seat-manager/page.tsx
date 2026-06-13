@@ -24,6 +24,7 @@ export default async function SeatManagerPage({
 
   return (
     <SeatManagerClient
+      key={libraryId}
       seats={seats}
       libraryId={libraryId}
       libraryName={libRow.data?.name ?? ''}

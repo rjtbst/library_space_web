@@ -22,21 +22,18 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import type { ActionResult }         from '@/lib/actions/auth'
 import { nowIST, validateISTRange }  from '@/lib/ist'
 import { log, logError }             from '@/lib/logger'
+import { fetchActiveSlotConfigs }    from '@/lib/booking/slotConfigService'
+import { validateBookingWindow }     from '@/lib/booking/bookingValidation'
+import type { SlotConfig }           from '@/lib/booking/types'
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SHARED TYPES  (mirrors owner.ts so StaffSeatManagerClient needs one import)
 ═══════════════════════════════════════════════════════════════════════════ */
 
-/** Mirrors SlotConfig from owner.ts — slots are stored as JSON in libraries.description */
-export type SlotConfig = {
-  id:        string
-  start:     string   // "HH:mm" IST  e.g. "06:00"
-  end:       string   // "HH:mm" IST  e.g. "09:00"
-  days:      string   // "all" | "weekday" | "weekend" | etc.
-  price:     number
-  discount:  number
-  is_active: boolean
-}
+// Re-exported for backward compatibility — StaffBookingsClient imports
+// SlotConfig from '@/lib/actions/staff-seat-actions'. The type now lives in
+// '@/lib/booking/types' and slots come from the slot_configs table.
+export type { SlotConfig }
 
 /** Mirrors ActiveBooking from owner.ts */
 export type SeniorActiveBooking = {
@@ -130,24 +127,7 @@ export async function getStaffLibrarySlots(libraryId: string): Promise<SlotConfi
 
   if (!staffRow) return []   // not assigned → no slot data
 
-  const { data: lib } = await supabase
-    .from('libraries')
-    .select('description, open_time, close_time')
-    .eq('id', libraryId)
-    .maybeSingle()
-
-  if (!lib) return []
-
-  // Parse JSON stored in libraries.description
-  let slots: SlotConfig[] = []
-  try {
-    const meta = JSON.parse((lib as any).description ?? '{}')
-    slots = (meta?.slots ?? []).filter((s: SlotConfig) => s.is_active)
-  } catch {
-    // description is not JSON or has no slots — fall through
-  }
-
-  return slots
+  return fetchActiveSlotConfigs(supabase, libraryId)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -363,6 +343,21 @@ export async function seniorManualBook(
 
   if (!staffRow || staffRow.role !== 'senior_staff')
     return { success: false, error: 'Access denied — senior staff only' }
+
+  // Same operating-hours / past-time checks as student & owner booking flows.
+  // Staff record walk-ins with a free-form amount, so this validates the
+  // BOOKING WINDOW only — pricing is left to the staff member's input.
+  const { data: libRow } = await supabase
+    .from('libraries').select('open_time, close_time').eq('id', libraryId).maybeSingle()
+
+  const windowCheck = validateBookingWindow({
+    startTime,
+    endTime,
+    openTime:  (libRow as any)?.open_time  ?? '00:00:00',
+    closeTime: (libRow as any)?.close_time ?? '23:59:59',
+    graceMinutes: 5,
+  })
+  if (windowCheck.ok === false) return { success: false, error: windowCheck.error }
 
   // Seat validity
   const { data: seat } = await supabase

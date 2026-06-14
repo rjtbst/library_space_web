@@ -9,7 +9,7 @@ import {
   Car, Coffee, ChevronLeft, ChevronRight, Users, Calendar,
   Zap as Flash,
 } from 'lucide-react'
-import { type OwnerSlot, type SlotOption, ownerSlotToOption } from '@/lib/libraryMeta'
+import { type SlotConfig, type SlotDisplayOption, slotToDisplayOption } from '@/lib/booking/types'
 import Image from 'next/image'
 
 type Plan = { id: string; name: string; price: number; duration_days: number; session_limit: string | null }
@@ -30,7 +30,7 @@ export default function LibraryDetail({
   library, ownerSlots, plans, freeSeats, isOpen, openHours, activeSub,
 }: {
   library:    Library
-  ownerSlots: OwnerSlot[]
+  ownerSlots: SlotConfig[]
   plans:      Plan[]
   freeSeats:  number
   isOpen:     boolean
@@ -40,7 +40,7 @@ export default function LibraryDetail({
   const router  = useRouter()
   const [imgIdx, setImgIdx] = useState(0)
 
-  const slotOptions: SlotOption[] = ownerSlots.map(ownerSlotToOption)
+  const slotOptions: SlotDisplayOption[] = ownerSlots.map(slotToDisplayOption)
 
   return (
     <div className="p-5 pb-32 max-w-3xl mx-auto">
@@ -63,7 +63,7 @@ export default function LibraryDetail({
       <div className="relative rounded-xl overflow-hidden h-[200px] sm:h-[240px] mb-5 flex items-center justify-center text-7xl"
         style={{ background: library.images.length === 0 ? GRADS[0] : undefined }}>
         {library.images.length > 0
-          ? <Image src={library.images[imgIdx % library.images.length]} alt={library.name} className="w-full h-full object-cover" />
+          ? <img src={library.images[imgIdx % library.images.length]} alt={library.name} className="w-full h-full object-cover" />
           : '📚'}
         {library.images.length > 1 && <>
           <button onClick={() => setImgIdx((i) => (i - 1 + library.images.length) % library.images.length)}
@@ -152,11 +152,11 @@ export default function LibraryDetail({
                 </div>
                 <div className="text-right">
                   {slot.discount > 0 && (
-                    <div className="text-[10px] text-[#9AACBE] line-through">₹{slot.basePrice}</div>
+                    <div className="text-[10px] text-[#9AACBE] line-through">₹{slot.basePrice}/hr</div>
                   )}
-                  <div className="text-[15px] font-extrabold text-[#1E5CFF]">₹{slot.finalPrice}</div>
+                  <div className="text-[15px] font-extrabold text-[#1E5CFF]">₹{slot.finalPrice}<span className="text-[10px] font-medium text-[#9AACBE]">/hr</span></div>
                   {slot.discount > 0 && (
-                    <div className="text-[9px] font-bold text-[#12A87A]">{slot.discount}% off</div>
+                    <div className="text-[9px] font-bold text-[#12A87A]">₹{slot.discount} off/hr</div>
                   )}
                 </div>
               </div>

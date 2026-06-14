@@ -1,4 +1,3 @@
-// components/owner/AddLibraryForm.tsx
 'use client'
 
 import { useState, useTransition, useEffect, useCallback } from 'react'
@@ -8,54 +7,57 @@ import type { LibraryForEdit } from '@/lib/actions/library'
 import { STATE_CITY_MAP } from '@/lib/config'
 import LocationPicker from '@/components/owner/LocationPicker'
 
+/* ─── Design tokens ─────────────────────────────────────────── */
 const ACCENT       = '#0D7C54'
 const ACCENT_LIGHT = '#D1FAE5'
 const DRAFT_KEY    = 'ls_draft_library_new'
 
-// Emoji map for known amenity names
+/* ─── Emoji map for amenity names ───────────────────────────── */
 const AMENITY_EMOJI: Record<string, string> = {
-  'WiFi':         '📶',
-  'AC':           '❄️',
-  'Quiet Zone':   '🔇',
-  'Power Sockets':'🔌',
-  'Parking':      '🚗',
-  'Cafeteria':    '☕',
-  'Washroom':     '🚽',
-  'Locker':       '🔐',
-  'Printing':     '🖨️',
-  'CCTV':         '📹',
-  'Power Backup': '⚡',
-  'Water':        '💧',
-  'Study Room':   '📖',
+  'WiFi':          '📶',
+  'AC':            '❄️',
+  'Quiet Zone':    '🔇',
+  'Power Sockets': '🔌',
+  'Parking':       '🚗',
+  'Cafeteria':     '☕',
+  'Washroom':      '🚽',
+  'Locker':        '🔐',
+  'Printing':      '🖨️',
+  'CCTV':          '📹',
+  'Power Backup':  '⚡',
+  'Water':         '💧',
+  'Study Room':    '📖',
 }
 
 export type AmenityOption = { id: string; name: string }
 
+/* ─── Form state ────────────────────────────────────────────── */
 type FormState = {
-  name:            string
-  state:           string
-  city:            string
-  area:            string
-  address:         string
-  openTime:        string
-  closeTime:       string
-  basePrice:       string
-  totalSeats:      string
-  amenityIds:      string[]   // ← UUIDs now, not names
-  lat:             number | null
-  lng:             number | null
-  razorpayId:      string
+  name:       string
+  state:      string
+  city:       string
+  area:       string
+  address:    string
+  openTime:   string
+  closeTime:  string
+  basePrice:  string
+  totalSeats: string
+  amenityIds: string[]    // UUIDs
+  lat:        number | null
+  lng:        number | null
+  razorpayId: string
 }
 
+/* ─── Props ─────────────────────────────────────────────────── */
 interface Props {
   libraryId:       string | null
   existingLibrary: LibraryForEdit | null
   profileState:    string
   profileCity:     string
-  amenities:       AmenityOption[]   // ← full list from DB, passed by server page
+  amenities:       AmenityOption[]   // full list from DB, passed by server page
 }
 
-/* ── Steps ── */
+/* ─── Steps indicator ───────────────────────────────────────── */
 function Steps() {
   const steps = [
     { label: 'Phone',   done: true  },
@@ -99,6 +101,7 @@ function Steps() {
   )
 }
 
+/* ─── Shared input style ────────────────────────────────────── */
 const inpBase: React.CSSProperties = {
   width: '100%', padding: '11px 13px',
   border: '1.5px solid #E2DDD4', borderRadius: 10,
@@ -108,6 +111,7 @@ const inpBase: React.CSSProperties = {
   appearance: 'none' as const,
 }
 
+/* ─── Field wrapper ─────────────────────────────────────────── */
 function Field({ label, required, hint, children }: {
   label: string; required?: boolean; hint?: string; children: React.ReactNode
 }) {
@@ -132,6 +136,7 @@ export default function AddLibraryForm({
   const router    = useRouter()
   const isEditing = !!libraryId
 
+  /* ── Build initial form state ── */
   const buildInitialForm = useCallback((): FormState => {
     if (existingLibrary) {
       return {
@@ -144,13 +149,14 @@ export default function AddLibraryForm({
         closeTime:  existingLibrary.close_time,
         basePrice:  existingLibrary.base_price  != null ? String(existingLibrary.base_price)  : '',
         totalSeats: existingLibrary.total_seats > 0     ? String(existingLibrary.total_seats) : '',
-        amenityIds: existingLibrary.amenityIds,   // ← UUIDs from DB
+        amenityIds: existingLibrary.amenityIds,
         lat:        existingLibrary.latitude,
         lng:        existingLibrary.longitude,
         razorpayId: existingLibrary.razorpay_account_id,
       }
     }
 
+    // New library: try localStorage draft first
     try {
       const raw = typeof window !== 'undefined' ? localStorage.getItem(DRAFT_KEY) : null
       if (raw) {
@@ -173,6 +179,7 @@ export default function AddLibraryForm({
       }
     } catch { /* ignore */ }
 
+    // No draft: pre-fill from owner profile
     return {
       name:       '',
       state:      profileState,
@@ -190,8 +197,8 @@ export default function AddLibraryForm({
     }
   }, [existingLibrary, profileState, profileCity])
 
-  const [form,      setForm]      = useState<FormState>(buildInitialForm)
-  const [error,     setError]     = useState('')
+  const [form,      setForm]         = useState<FormState>(buildInitialForm)
+  const [error,     setError]        = useState('')
   const [isPending, startTransition] = useTransition()
 
   const patch = useCallback((partial: Partial<FormState>) =>
@@ -206,11 +213,13 @@ export default function AddLibraryForm({
     e.target.style.boxShadow   = 'none'
   }
 
+  /* ── Persist draft on every change (new library only) ── */
   useEffect(() => {
     if (isEditing) return
     try { localStorage.setItem(DRAFT_KEY, JSON.stringify(form)) } catch { /* ignore */ }
   }, [form, isEditing])
 
+  /* ── Amenity toggle ── */
   const toggleAmenity = (id: string) =>
     patch({
       amenityIds: form.amenityIds.includes(id)
@@ -218,11 +227,12 @@ export default function AddLibraryForm({
         : [...form.amenityIds, id],
     })
 
-  // All fields mandatory — adjust rules here as needed
+  /* ── Validation — all fields required except lat/lng and razorpayId ── */
   const valid =
     form.name.trim().length >= 2 &&
     !!form.state &&
     !!form.city &&
+    form.area.trim().length >= 1 &&
     form.address.trim().length >= 5 &&
     !!form.openTime &&
     !!form.closeTime &&
@@ -230,6 +240,7 @@ export default function AddLibraryForm({
     !!form.totalSeats &&
     form.amenityIds.length > 0
 
+  /* ── Submit ── */
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
@@ -242,9 +253,9 @@ export default function AddLibraryForm({
         address:             form.address.trim(),
         open_time:           form.openTime,
         close_time:          form.closeTime,
-        base_price:          form.basePrice  ? parseFloat(form.basePrice)   : null,
-        total_seats:         form.totalSeats ? parseInt(form.totalSeats, 10) : null,
-        amenity_ids:         form.amenityIds,   // ← send IDs, not names
+        base_price:          parseFloat(form.basePrice),
+        total_seats:         parseInt(form.totalSeats, 10),
+        amenity_ids:         form.amenityIds,
         latitude:            form.lat,
         longitude:           form.lng,
         razorpay_account_id: form.razorpayId.trim() || null,
@@ -263,6 +274,7 @@ export default function AddLibraryForm({
 
   const cities = form.state ? (STATE_CITY_MAP[form.state] ?? []) : []
 
+  /* ══════════════════════════════════════════════════════════ */
   return (
     <div style={{
       minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -272,21 +284,28 @@ export default function AddLibraryForm({
       <div style={{ width: '100%', maxWidth: 560 }}>
         <Steps />
 
+        {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
           <div style={{
             width: 52, height: 52, borderRadius: 14, background: ACCENT,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             margin: '0 auto 16px', boxShadow: '0 4px 18px rgba(13,124,84,.32)', fontSize: 24,
           }}>📚</div>
-          <h1 style={{ fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 26, color: '#0A0D12', letterSpacing: '-0.04em', marginBottom: 6 }}>
+          <h1 style={{
+            fontFamily: 'Syne, sans-serif', fontWeight: 800, fontSize: 26,
+            color: '#0A0D12', letterSpacing: '-0.04em', marginBottom: 6,
+          }}>
             {isEditing ? 'Edit your library' : 'Register your library'}
           </h1>
-          <p style={{ fontSize: 14, color: '#6B7689', fontWeight: 300 }}>Step 4 of 6 — Basic information</p>
+          <p style={{ fontSize: 14, color: '#6B7689', fontWeight: 300 }}>
+            Step 4 of 6 — Basic information
+          </p>
           {!isEditing && (
             <p style={{ fontSize: 11, color: ACCENT, marginTop: 6 }}>✦ Draft auto-saved as you type</p>
           )}
         </div>
 
+        {/* Card */}
         <div style={{
           background: '#FDFCF9', border: '1px solid #E2DDD4',
           borderRadius: 20, padding: '28px 28px 24px',
@@ -294,6 +313,7 @@ export default function AddLibraryForm({
         }}>
           <form onSubmit={handleSubmit}>
 
+            {/* Library name */}
             <Field label="Library name" required>
               <input
                 type="text" autoFocus placeholder="e.g. Silence Study Hub"
@@ -302,6 +322,7 @@ export default function AddLibraryForm({
               />
             </Field>
 
+            {/* State + City */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <Field label="State" required>
                 <select
@@ -320,7 +341,11 @@ export default function AddLibraryForm({
                   value={form.city}
                   onChange={e => patch({ city: e.target.value })}
                   disabled={!form.state}
-                  style={{ ...inpBase, cursor: form.state ? 'pointer' : 'not-allowed', opacity: form.state ? 1 : 0.55 }}
+                  style={{
+                    ...inpBase,
+                    cursor:  form.state ? 'pointer'      : 'not-allowed',
+                    opacity: form.state ? 1              : 0.55,
+                  }}
                   onFocus={onFocus} onBlur={onBlur}
                 >
                   <option value="">{form.state ? 'Select city' : 'Select state first'}</option>
@@ -329,12 +354,14 @@ export default function AddLibraryForm({
               </Field>
             </div>
 
+            {/* Profile pre-fill hint */}
             {!isEditing && profileState && form.state === profileState && (
               <p style={{ fontSize: 11, color: ACCENT, marginTop: -10, marginBottom: 14 }}>
                 ✦ Pre-filled from your profile — change if needed
               </p>
             )}
 
+            {/* Area */}
             <Field label="Area / Locality" required>
               <input
                 type="text" placeholder="e.g. Civil Lines"
@@ -343,6 +370,7 @@ export default function AddLibraryForm({
               />
             </Field>
 
+            {/* Address */}
             <Field label="Full address" required>
               <textarea
                 placeholder="Shop No., Street, Landmark"
@@ -352,6 +380,7 @@ export default function AddLibraryForm({
               />
             </Field>
 
+            {/* Location picker — optional */}
             <div style={{ marginBottom: 16 }}>
               <label style={{ fontSize: 12, fontWeight: 600, color: '#3A4A5C', display: 'block', marginBottom: 6 }}>
                 Pin location on map
@@ -368,7 +397,8 @@ export default function AddLibraryForm({
               )}
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            {/* Open / Close times */}
+            {/* <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <Field label="Opening time" required>
                 <input type="time" value={form.openTime}
                   onChange={e => patch({ openTime: e.target.value })}
@@ -379,7 +409,7 @@ export default function AddLibraryForm({
                   onChange={e => patch({ closeTime: e.target.value })}
                   style={inpBase} onFocus={onFocus} onBlur={onBlur} />
               </Field>
-            </div>
+            </div> */}
 
             {/* Amenities — driven by DB list, keyed by UUID */}
             <div style={{ marginBottom: 16 }}>
@@ -394,13 +424,18 @@ export default function AddLibraryForm({
                   const selected = form.amenityIds.includes(id)
                   const emoji    = AMENITY_EMOJI[name] ?? '✦'
                   return (
-                    <button key={id} type="button" onClick={() => toggleAmenity(id)} style={{
-                      padding: '6px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600,
-                      cursor: 'pointer', fontFamily: 'DM Sans, sans-serif',
-                      border: `1.5px solid ${selected ? ACCENT : '#E2DDD4'}`,
-                      background: selected ? ACCENT_LIGHT : '#FDFCF9',
-                      color: selected ? ACCENT : '#6B7689', transition: 'all .15s',
-                    }}>
+                    <button
+                      key={id} type="button"
+                      onClick={() => toggleAmenity(id)}
+                      style={{
+                        padding: '6px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600,
+                        cursor: 'pointer', fontFamily: 'DM Sans, sans-serif',
+                        border:     `1.5px solid ${selected ? ACCENT : '#E2DDD4'}`,
+                        background: selected ? ACCENT_LIGHT : '#FDFCF9',
+                        color:      selected ? ACCENT       : '#6B7689',
+                        transition: 'all .15s',
+                      }}
+                    >
                       {emoji} {name}
                     </button>
                   )
@@ -408,7 +443,8 @@ export default function AddLibraryForm({
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            {/* Base price + Total seats */}
+            {/* <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <Field label="Base price / month (₹)" required>
                 <input
                   type="number" min="0" step="1" placeholder="999"
@@ -423,8 +459,9 @@ export default function AddLibraryForm({
                   style={inpBase} onFocus={onFocus} onBlur={onBlur}
                 />
               </Field>
-            </div>
+            </div> */}
 
+            {/* Razorpay — optional */}
             <Field
               label="Razorpay Account ID"
               hint="Find it in Razorpay Dashboard → Account Settings."
@@ -438,6 +475,7 @@ export default function AddLibraryForm({
 
             <div style={{ height: 1, background: '#E2DDD4', margin: '8px 0 20px' }} />
 
+            {/* Error banner */}
             {error && (
               <div style={{
                 background: '#FDEAEA', border: '1px solid rgba(212,43,43,.2)',
@@ -449,32 +487,43 @@ export default function AddLibraryForm({
               </div>
             )}
 
+            {/* Buttons */}
             <div style={{ display: 'flex', gap: 10 }}>
-              <button type="button" onClick={() => router.back()} style={{
-                flex: 1, padding: '13px 0', borderRadius: 10, fontSize: 14, fontWeight: 600,
-                fontFamily: 'DM Sans, sans-serif', border: '1.5px solid #E2DDD4',
-                background: '#FDFCF9', color: '#3A4A5C', cursor: 'pointer',
-              }}>
+              <button
+                type="button" onClick={() => router.back()}
+                style={{
+                  flex: 1, padding: '13px 0', borderRadius: 10, fontSize: 14, fontWeight: 600,
+                  fontFamily: 'DM Sans, sans-serif', border: '1.5px solid #E2DDD4',
+                  background: '#FDFCF9', color: '#3A4A5C', cursor: 'pointer',
+                }}
+              >
                 ← Back
               </button>
-              <button type="submit" disabled={!valid || isPending} style={{
-                flex: 2, padding: '13px 0', borderRadius: 10, fontSize: 15, fontWeight: 700,
-                fontFamily: 'Syne, sans-serif', border: 'none',
-                background: valid ? ACCENT : '#C8D4C8', color: '#fff',
-                cursor: valid ? 'pointer' : 'not-allowed',
-                boxShadow: valid ? '0 4px 16px rgba(13,124,84,.3)' : 'none',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              }}>
+              <button
+                type="submit" disabled={!valid || isPending}
+                style={{
+                  flex: 2, padding: '13px 0', borderRadius: 10, fontSize: 15, fontWeight: 700,
+                  fontFamily: 'Syne, sans-serif', border: 'none',
+                  background: valid ? ACCENT    : '#C8D4C8',
+                  color: '#fff',
+                  cursor:    valid ? 'pointer'  : 'not-allowed',
+                  boxShadow: valid ? '0 4px 16px rgba(13,124,84,.3)' : 'none',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                }}
+              >
                 {isPending && (
                   <span style={{
-                    width: 15, height: 15, border: '2px solid rgba(255,255,255,.35)',
-                    borderTopColor: '#fff', borderRadius: '50%', display: 'inline-block',
+                    width: 15, height: 15,
+                    border: '2px solid rgba(255,255,255,.35)',
+                    borderTopColor: '#fff', borderRadius: '50%',
+                    display: 'inline-block',
                     animation: 'spin .65s linear infinite',
                   }} />
                 )}
                 {isPending ? 'Saving…' : 'Save & Continue →'}
               </button>
             </div>
+
           </form>
         </div>
 

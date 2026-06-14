@@ -80,6 +80,41 @@ export function getISTHour(dbTimestamp: string): number {
   return parseInt(dbTimestamp.split('T')[1]?.split(':')[0] ?? '0', 10)
 }
 
+/**
+ * Extract minutes-since-midnight (IST) from a plain IST DB string.
+ * e.g. "2024-01-15T14:30:00" → 870  (14*60 + 30)
+ * Used by the slot-pricing/operating-hours modules to compare against
+ * Postgres `time` columns and slot start/end times.
+ */
+export function getISTMinutesOfDay(dbTimestamp: string): number {
+  const [hh, mm] = (dbTimestamp.split('T')[1] ?? '0:0').split(':')
+  return (parseInt(hh ?? '0', 10) * 60) + parseInt(mm ?? '0', 10)
+}
+
+/**
+ * The IST calendar date portion of a plain IST DB string.
+ * e.g. "2024-01-15T14:30:00" → "2024-01-15"
+ * Used to check whether a booking's start and end fall on the same day.
+ */
+export function getISTDateKey(dbTimestamp: string): string {
+  return dbTimestamp.split('T')[0] ?? ''
+}
+
+/**
+ * Day-of-week index for a plain IST DB string, using the
+ * Mon=0 .. Sun=6 convention used by slot_configs.days.
+ * e.g. "2024-01-15T14:30:00" (a Monday) → 0
+ *
+ * Computed purely from the calendar date (Y-M-D) using Date.UTC, so it is
+ * independent of the server's runtime timezone — no IST offset arithmetic
+ * needed since we already have the IST calendar date as a string.
+ */
+export function getISTDayIndex(dbTimestamp: string): number {
+  const [y, m, d] = getISTDateKey(dbTimestamp).split('-').map(Number)
+  const jsDay = new Date(Date.UTC(y, (m ?? 1) - 1, d ?? 1)).getUTCDay() // 0=Sun..6=Sat
+  return jsDay === 0 ? 6 : jsDay - 1 // remap to 0=Mon..6=Sun
+}
+
 // ─── Client-safe helpers ──────────────────────────────────────────────────────
 
 /**

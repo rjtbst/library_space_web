@@ -4,18 +4,18 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { z } from 'zod'
 import type { ActionResult } from '@/lib/actions/auth'
 
-/* ─── Shared Zod schema (used by both create & update) ─────────────────────── */
+/* ─── Shared Zod schema ─────────────────────────────────────────────────────── */
 const librarySchema = z.object({
   name:                z.string().min(2).max(120).trim(),
-  state:               z.string().min(1).max(80).trim(),          // now required
+  state:               z.string().min(1).max(80).trim(),
   city:                z.string().min(1).max(80).trim(),
-  area:                z.string().min(1).max(120).trim(),          // now required
+  area:                z.string().min(1).max(120).trim(),
   address:             z.string().min(5).max(400).trim(),
-  open_time:           z.string().regex(/^\d{2}:\d{2}$/),         // now required
-  close_time:          z.string().regex(/^\d{2}:\d{2}$/),         // now required
-  base_price:          z.number().positive(),                     // now required
-  total_seats:         z.number().int().positive(),               // now required
-  amenity_ids:         z.array(z.string().uuid()).min(1),         // ← UUIDs, min 1
+  open_time:           z.string().regex(/^\d{2}:\d{2}$/),
+  close_time:          z.string().regex(/^\d{2}:\d{2}$/),
+  base_price:          z.number().positive(),
+  total_seats:         z.number().int().positive(),
+  amenity_ids:         z.array(z.string().uuid()).min(1),
   latitude:            z.number().nullable().optional(),
   longitude:           z.number().nullable().optional(),
   razorpay_account_id: z.string().max(100).trim().nullable().optional(),
@@ -25,8 +25,6 @@ export type LibraryFormInput = z.infer<typeof librarySchema>
 
 /* ═══════════════════════════════════════════════════════════════
    GET LIBRARY FOR EDIT
-   Called on page load when ?id= is present. Pre-fills the form.
-   State comes from the libraries.state column (added via migration).
 ═══════════════════════════════════════════════════════════════ */
 export type LibraryForEdit = {
   id:                  string
@@ -39,7 +37,7 @@ export type LibraryForEdit = {
   close_time:          string
   base_price:          number | null
   total_seats:         number
-  amenityIds:          string[]   // ← UUIDs
+  amenityIds:          string[]      // UUIDs
   latitude:            number | null
   longitude:           number | null
   razorpay_account_id: string
@@ -61,18 +59,13 @@ export async function getLibraryForEdit(
 
   if (!lib) return null
 
-  // Fetch linked amenity names
+  // Fetch linked amenity IDs directly — no join needed
   const { data: linkedAmenities } = await supabase
     .from('library_amenities')
-    .select('amenities(name)')
+    .select('amenity_id')
     .eq('library_id', libraryId)
 
-  const amenities: string[] = (linkedAmenities ?? [])
-    .flatMap((row: any) =>
-      Array.isArray(row.amenities)
-        ? row.amenities.map((a: any) => a.name)
-        : row.amenities?.name ? [row.amenities.name] : []
-    )
+  const amenityIds: string[] = (linkedAmenities ?? []).map((r: any) => r.amenity_id)
 
   // Active seat count
   const { count: seatCount } = await supabase
@@ -85,24 +78,24 @@ export async function getLibraryForEdit(
 
   return {
     id:                  lib.id,
-    name:                lib.name                  ?? '',
-    state:               (lib as any).state        ?? '',   // cast: generated types lag migration
-    city:                lib.city                  ?? '',
-    area:                lib.area                  ?? '',
-    address:             lib.address               ?? '',
-    open_time:           fmt(lib.open_time)         || '06:00',
-    close_time:          fmt(lib.close_time)        || '22:00',
+    name:                lib.name                ?? '',
+    state:               (lib as any).state      ?? '',
+    city:                lib.city                ?? '',
+    area:                lib.area                ?? '',
+    address:             lib.address             ?? '',
+    open_time:           fmt(lib.open_time)       || '06:00',
+    close_time:          fmt(lib.close_time)      || '22:00',
     base_price:          lib.base_price  != null ? Number(lib.base_price)  : null,
-    total_seats:         seatCount                 ?? 0,
-    amenities,
+    total_seats:         seatCount               ?? 0,
+    amenityIds,
     latitude:            lib.latitude   != null ? Number(lib.latitude)   : null,
     longitude:           lib.longitude  != null ? Number(lib.longitude)  : null,
-    razorpay_account_id: lib.razorpay_account_id   ?? '',
+    razorpay_account_id: lib.razorpay_account_id ?? '',
   }
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   CREATE LIBRARY  (step 4 — first time, no ?id= in URL)
+   CREATE LIBRARY
 ═══════════════════════════════════════════════════════════════ */
 export async function createLibrary(
   input: LibraryFormInput,
@@ -118,7 +111,7 @@ export async function createLibrary(
 
   const {
     name, state, city, area, address,
-    open_time, close_time, base_price, total_seats, amenities,
+    open_time, close_time, base_price, total_seats, amenity_ids,
     latitude, longitude, razorpay_account_id,
   } = parsed.data
 
@@ -127,13 +120,13 @@ export async function createLibrary(
     .insert({
       owner_id:            user.id,
       name,
-      state:               state               || null,
+      state:               state || null,
       city,
       area,
       address,
-      open_time:           open_time           ?? null,
-      close_time:          close_time          ?? null,
-      base_price:          base_price          ?? null,
+      open_time,
+      close_time,
+      base_price,
       latitude:            latitude            ?? null,
       longitude:           longitude           ?? null,
       razorpay_account_id: razorpay_account_id ?? null,
@@ -149,19 +142,14 @@ export async function createLibrary(
 
   const libraryId = library.id
 
-  await syncAmenities(supabase, libraryId, amenities)
-
-  if (total_seats && total_seats > 0) {
-    await generateSeats(supabase, libraryId, total_seats)
-  }
+  await syncAmenities(supabase, libraryId, amenity_ids)
+  await generateSeats(supabase, libraryId, total_seats)
 
   return { success: true, data: { libraryId } }
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   UPDATE LIBRARY  (step 4 — returning with ?id= in URL)
-   Re-syncs amenities. Does NOT re-generate seats (seat manager
-   handles that separately so existing bookings are safe).
+   UPDATE LIBRARY
 ═══════════════════════════════════════════════════════════════ */
 export async function updateLibrary(
   libraryId: string,
@@ -179,20 +167,20 @@ export async function updateLibrary(
   const {
     name, state, city, area, address,
     open_time, close_time, base_price,
-    amenities, latitude, longitude, razorpay_account_id,
+    amenity_ids, latitude, longitude, razorpay_account_id,
   } = parsed.data
 
   const { error: updateErr } = await supabase
     .from('libraries')
     .update({
       name,
-      state:               state               || null,
+      state:               state || null,
       city,
       area,
       address,
-      open_time:           open_time           ?? null,
-      close_time:          close_time          ?? null,
-      base_price:          base_price          ?? null,
+      open_time,
+      close_time,
+      base_price,
       latitude:            latitude            ?? null,
       longitude:           longitude           ?? null,
       razorpay_account_id: razorpay_account_id ?? null,
@@ -205,7 +193,7 @@ export async function updateLibrary(
     return { success: false, error: updateErr.message }
   }
 
-  await syncAmenities(supabase, libraryId, amenities)
+  await syncAmenities(supabase, libraryId, amenity_ids)
 
   return { success: true, data: { libraryId } }
 }
@@ -216,9 +204,8 @@ export async function updateLibrary(
 async function syncAmenities(
   supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
   libraryId: string,
-  amenities: string[],
+  amenityIds: string[],
 ) {
-  // Delete all existing links for this library
   const { error: deleteErr } = await supabase
     .from('library_amenities')
     .delete()
@@ -229,39 +216,13 @@ async function syncAmenities(
     return
   }
 
-  if (!amenities.length) return
+  if (!amenityIds.length) return
 
-  // Look up IDs — names must exactly match DB (enforced by SQL above)
-  const { data: rows, error: fetchErr } = await supabase
-    .from('amenities')
-    .select('id, name')
-    .in('name', amenities)
-
-  if (fetchErr) {
-    console.error('syncAmenities: fetch failed', fetchErr)
-    return
-  }
-
-  if (!rows?.length) {
-    console.error('syncAmenities: no matches found for:', amenities)
-    return
-  }
-
-  // Warn about any names that didn't resolve so mismatches are visible
-  const found = new Set(rows.map(r => r.name))
-  const unmatched = amenities.filter(a => !found.has(a))
-  if (unmatched.length) {
-    console.warn('syncAmenities: unmatched amenity names (not in DB):', unmatched)
-  }
-
-  // Insert junction rows
   const { error: linkErr } = await supabase
     .from('library_amenities')
-    .insert(rows.map(a => ({ library_id: libraryId, amenity_id: a.id })))
+    .insert(amenityIds.map(amenity_id => ({ library_id: libraryId, amenity_id })))
 
-  if (linkErr) {
-    console.error('syncAmenities: insert failed', linkErr)
-  }
+  if (linkErr) console.error('syncAmenities: insert failed', linkErr)
 }
 
 async function generateSeats(
@@ -283,8 +244,7 @@ async function generateSeats(
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   UPLOAD LIBRARY PHOTO  (step 5 — photos)
-   First photo is auto-set as cover.
+   UPLOAD LIBRARY PHOTO
 ═══════════════════════════════════════════════════════════════ */
 export async function uploadLibraryPhoto(
   formData: FormData,
@@ -305,7 +265,7 @@ export async function uploadLibraryPhoto(
 
   const allowed = ['image/jpeg', 'image/png', 'image/webp']
   if (!allowed.includes(file.type)) return { success: false, error: 'Only JPG, PNG, and WebP images are allowed' }
-  if (file.size > 10 * 1024 * 1024)  return { success: false, error: 'File size must be under 10 MB' }
+  if (file.size > 10 * 1024 * 1024) return { success: false, error: 'File size must be under 10 MB' }
 
   const ext         = file.name.split('.').pop()?.toLowerCase() ?? 'jpg'
   const prefix      = isCover ? 'cover' : 'photo'
@@ -349,7 +309,7 @@ export async function uploadLibraryPhoto(
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   GET LIBRARY PHOTOS  (restores uploaded photos on back-navigation)
+   GET LIBRARY PHOTOS
 ═══════════════════════════════════════════════════════════════ */
 export type LibraryPhotoRow = { id: string; url: string; isCover: boolean }
 
@@ -392,7 +352,6 @@ export async function setCoverPhoto(imageId: string, libraryId: string): Promise
 
 /* ═══════════════════════════════════════════════════════════════
    DELETE LIBRARY PHOTO
-   Auto-promotes oldest remaining photo to cover if cover deleted.
 ═══════════════════════════════════════════════════════════════ */
 export async function deleteLibraryPhoto(imageId: string): Promise<ActionResult> {
   const supabase = await createServerSupabaseClient()
@@ -434,7 +393,7 @@ export async function deleteLibraryPhoto(imageId: string): Promise<ActionResult>
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   GET LIBRARY ONBOARDING SUMMARY  (go-live checklist)
+   GET LIBRARY ONBOARDING SUMMARY
 ═══════════════════════════════════════════════════════════════ */
 export type LibrarySummary = {
   name: string; city: string; area: string
@@ -479,7 +438,7 @@ export async function getLibraryOnboardingSummary(libraryId: string): Promise<Li
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   PUBLISH LIBRARY  (go-live)
+   PUBLISH LIBRARY
 ═══════════════════════════════════════════════════════════════ */
 export async function publishLibrary(libraryId: string): Promise<ActionResult> {
   const supabase = await createServerSupabaseClient()

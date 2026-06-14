@@ -1,0 +1,200 @@
+// src/lib/booking/slotConfigService.ts
+/**
+ * Shared data-access layer for the `slot_configs` table.
+ *
+ * Replaces the JSON-in-`libraries.description` approach that was previously
+ * duplicated in:
+ *  - lib/actions/owner.ts            (getLibMeta / getSlotConfigs / upsertSlotConfig / toggleSlotConfig)
+ *  - lib/actions/staff-seat-actions.ts (getStaffLibrarySlots)
+ *  - lib/libraryMeta.ts               (parseLibraryMeta)
+ *
+ * This module does NOT do auth/ownership checks — callers (owner.ts,
+ * staff-seat-actions.ts, student.ts) are responsible for verifying the
+ * current user may access `libraryId` before calling these functions.
+ * This keeps the service reusable across all three roles without baking in
+ * role-specific assumptions.
+ */
+
+import { logError } from '../logger'
+import { type SlotConfig, type SlotConfigInput } from './types'
+import { validateSlot, findSlotConflict } from './slotValidation'
+
+type ServiceResult<T> =
+  | { success: true; data: T }
+  | { success: false; error: string }
+
+/* ─── Row <-> domain mapping ─────────────────────────────────────────────── */
+
+type SlotConfigRow = {
+  id:         string
+  library_id: string
+  start_time: string  // "HH:MM:SS"
+  end_time:   string
+  days:       number[]
+  price:      number | string
+  discount:   number | string | null
+  is_active:  boolean
+}
+
+function rowToSlot(row: SlotConfigRow): SlotConfig {
+  return {
+    id:         row.id,
+    library_id: row.library_id,
+    start:      row.start_time.slice(0, 5),
+    end:        row.end_time.slice(0, 5),
+    days:       row.days ?? [],
+    price:      Number(row.price ?? 0),
+    discount:   Number(row.discount ?? 0),
+    is_active:  row.is_active,
+  }
+}
+
+/* ─── Read ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Fetch ALL slot configs (active and inactive) for a library, ordered by
+ * start time. Returns [] on error rather than throwing — callers display
+ * "no slots configured" in that case, same as before.
+ */
+export async function fetchSlotConfigs(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase:  any,
+  libraryId: string,
+): Promise<SlotConfig[]> {
+  const { data, error } = await supabase
+    .from('slot_configs')
+    .select('id, library_id, start_time, end_time, days, price, discount, is_active')
+    .eq('library_id', libraryId)
+    .order('start_time', { ascending: true })
+
+  if (error) {
+    logError('fetchSlotConfigs', `library=${libraryId}`, error)
+    return []
+  }
+  return (data ?? []).map(rowToSlot)
+}
+
+/** Fetch only ACTIVE slot configs — used for pricing resolution and student-facing displays. */
+export async function fetchActiveSlotConfigs(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase:  any,
+  libraryId: string,
+): Promise<SlotConfig[]> {
+  const all = await fetchSlotConfigs(supabase, libraryId)
+  return all.filter(s => s.is_active)
+}
+
+/* ─── Write ───────────────────────────────────────────────────────────────── */
+
+/**
+ * Create or update a slot config. Runs full validation (shape + duplicate /
+ * overlap detection against the library's other active slots) before
+ * touching the database.
+ */
+export async function upsertSlotConfig(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase:  any,
+  libraryId: string,
+  input:     SlotConfigInput,
+  createdBy: string,
+): Promise<ServiceResult<SlotConfig>> {
+  const existing = await fetchSlotConfigs(supabase, libraryId)
+
+  const validation = validateSlot(input, existing)
+  if (validation.ok === false) return { success: false, error: validation.error }
+
+  const payload = {
+    library_id: libraryId,
+    start_time: `${input.start}:00`,
+    end_time:   `${input.end}:00`,
+    days:       input.days,
+    price:      input.price,
+    discount:   input.discount,
+    is_active:  input.is_active,
+    updated_at: new Date().toISOString(),
+  }
+
+  if (input.id) {
+    const { data, error } = await supabase
+      .from('slot_configs')
+      .update(payload as never)
+      .eq('id', input.id)
+      .eq('library_id', libraryId)
+      .select('id, library_id, start_time, end_time, days, price, discount, is_active')
+      .single()
+
+    if (error || !data) {
+      logError('upsertSlotConfig', `update library=${libraryId} slot=${input.id}`, error)
+      return { success: false, error: error?.message ?? 'Failed to update slot' }
+    }
+    return { success: true, data: rowToSlot(data) }
+  }
+
+  const { data, error } = await supabase
+    .from('slot_configs')
+    .insert({ ...payload, created_by: createdBy } as never)
+    .select('id, library_id, start_time, end_time, days, price, discount, is_active')
+    .single()
+
+  if (error || !data) {
+    logError('upsertSlotConfig', `insert library=${libraryId}`, error)
+    return { success: false, error: error?.message ?? 'Failed to create slot' }
+  }
+  return { success: true, data: rowToSlot(data) }
+}
+
+/**
+ * Enable/disable a slot. Re-activating a slot re-runs conflict detection —
+ * a slot that was disabled to avoid a conflict shouldn't silently become
+ * ambiguous again when re-enabled.
+ */
+export async function toggleSlotConfig(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase:  any,
+  libraryId: string,
+  slotId:    string,
+  isActive:  boolean,
+): Promise<ServiceResult<SlotConfig>> {
+  const existing = await fetchSlotConfigs(supabase, libraryId)
+  const slot     = existing.find(s => s.id === slotId)
+  if (!slot) return { success: false, error: 'Slot not found' }
+
+  if (isActive) {
+    const conflict = findSlotConflict({ ...slot, is_active: true }, existing)
+    if (conflict.ok === false) return { success: false, error: conflict.error }
+  }
+
+  const { data, error } = await supabase
+    .from('slot_configs')
+    .update({ is_active: isActive, updated_at: new Date().toISOString() } as never)
+    .eq('id', slotId)
+    .eq('library_id', libraryId)
+    .select('id, library_id, start_time, end_time, days, price, discount, is_active')
+    .single()
+
+  if (error || !data) {
+    logError('toggleSlotConfig', `library=${libraryId} slot=${slotId}`, error)
+    return { success: false, error: error?.message ?? 'Failed to update slot' }
+  }
+  return { success: true, data: rowToSlot(data) }
+}
+
+/** Permanently remove a slot config (not currently exposed in the UI, but available for future use). */
+export async function deleteSlotConfig(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase:  any,
+  libraryId: string,
+  slotId:    string,
+): Promise<ServiceResult<undefined>> {
+  const { error } = await supabase
+    .from('slot_configs')
+    .delete()
+    .eq('id', slotId)
+    .eq('library_id', libraryId)
+
+  if (error) {
+    logError('deleteSlotConfig', `library=${libraryId} slot=${slotId}`, error)
+    return { success: false, error: error.message }
+  }
+  return { success: true, data: undefined }
+}

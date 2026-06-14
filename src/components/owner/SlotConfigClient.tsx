@@ -1,8 +1,9 @@
 'use client'
 import { useState, useTransition, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
-import type { SlotConfig } from '@/lib/actions/owner'
+import type { SlotConfig, SlotConfigInput } from '@/lib/actions/owner'
 import { upsertSlotConfig, toggleSlotConfig } from '@/lib/actions/owner'
+import { daysDisplay } from '@/lib/booking/types'
 import { useOwner } from '@/contexts/OwnerContext'
 import { useToast } from '@/hooks/useToast'
 import {
@@ -18,29 +19,6 @@ const EMPTY_FORM = {
   start: '09:00', end: '12:00',
   days: [0, 1, 2, 3, 4] as number[],
   price: '', discount: '',
-}
-
-// For STORAGE — individual day names, comma-separated (no range compression)
-// so that openEdit reverse-parse works correctly for any combination of days
-function daysToString(indices: number[]): string {
-  if (indices.length === 0) return 'No days'
-  return [...indices].sort().map(i => DAYS[i]).join(', ')
-}
-
-// For DISPLAY only — range compression for readability in the table
-function daysDisplay(indices: number[]): string {
-  if (indices.length === 7) return 'Mon–Sun'
-  if (indices.length === 0) return 'No days'
-  const sorted = [...indices].sort()
-  const groups: number[][] = []
-  let group: number[] = [sorted[0]]
-  for (let i = 1; i < sorted.length; i++) {
-    sorted[i] === sorted[i - 1] + 1 ? group.push(sorted[i]) : (groups.push(group), group = [sorted[i]])
-  }
-  groups.push(group)
-  return groups.map(g =>
-    g.length >= 3 ? `${DAYS[g[0]]}–${DAYS[g[g.length - 1]]}` : g.map(i => DAYS[i]).join(', ')
-  ).join(', ')
 }
 
 export default function SlotConfigClient({
@@ -67,20 +45,10 @@ export default function SlotConfigClient({
   }, [])
 
   const openEdit = useCallback((slot: SlotConfig) => {
-    // Handles both "Mon, Tue, Wed" (new individual format) and
-    // "Mon–Fri" (legacy compressed format) so existing DB data still works
-    const dayIndices = DAYS.map((_, i) => i).filter(i =>
-      slot.days.split(',').some(segment => {
-        const seg = segment.trim()
-        if (seg.includes('–')) {
-          const [from, to] = seg.split('–').map(d => DAYS.indexOf(d.trim()))
-          return from !== -1 && to !== -1 && i >= from && i <= to
-        }
-        return seg === DAYS[i]
-      })
-    )
+    // slot.days is already number[] (0=Mon..6=Sun) — straight from slot_configs,
+    // no reverse-parsing needed.
     setEditing(slot)
-    setForm({ start: slot.start, end: slot.end, days: dayIndices, price: String(slot.price), discount: String(slot.discount || '') })
+    setForm({ start: slot.start, end: slot.end, days: [...slot.days], price: String(slot.price), discount: String(slot.discount || '') })
     setError(''); setShowForm(true)
     setTimeout(() => document.getElementById('slot-form')?.scrollIntoView({ behavior: 'smooth' }), 50)
   }, [])
@@ -99,10 +67,10 @@ export default function SlotConfigClient({
     if (!form.price || isNaN(Number(form.price))) { setError('Enter a valid price'); return }
     if (form.start >= form.end)            { setError('End time must be after start time'); return }
 
-    const payload = {
+    const payload: SlotConfigInput = {
       id:        editing?.id,
       start:     form.start, end: form.end,
-      days:      daysToString(form.days),   // ← was daysFromIndices (compressed); now stores individual names
+      days:      [...form.days],   // number[] (0=Mon..6=Sun) — sent straight to slot_configs.days
       price:     Number(form.price),
       discount:  Number(form.discount || 0),
       is_active: editing?.is_active ?? true,
@@ -111,7 +79,7 @@ export default function SlotConfigClient({
       const res = await upsertSlotConfig(libraryId, payload)
       if (res.success === false) { setError(res.error); return }
       if (editing) {
-        setSlots(prev => prev.map(s => s.id === editing.id ? { ...s, ...payload, id: editing.id } : s))
+        setSlots(prev => prev.map(s => s.id === editing.id ? res.data : s))
         showToast('Slot updated')
       } else {
         router.refresh(); showToast('Slot added')
@@ -193,7 +161,7 @@ export default function SlotConfigClient({
                     <td style={{ padding: '13px 16px', fontWeight: 700, color: TEXT_PRIMARY, whiteSpace: 'nowrap' }}>
                       {slot.start} – {slot.end}
                     </td>
-                    <td style={{ padding: '13px 16px', color: TEXT_SECONDARY }}>{slot.days}</td>
+                    <td style={{ padding: '13px 16px', color: TEXT_SECONDARY }}>{daysDisplay(slot.days)}</td>
                     <td style={{ padding: '13px 16px', fontWeight: 700, color: TEXT_PRIMARY }}>₹{slot.price}</td>
                     <td style={{ padding: '13px 16px', color: slot.discount ? TEXT_PRIMARY : TEXT_MUTED }}>
                       {slot.discount ? `₹${slot.discount} off` : 'No discount'}
@@ -280,7 +248,7 @@ export default function SlotConfigClient({
             </div>
             <div>
               <label style={{ fontSize: 11, fontWeight: 600, color: TEXT_SECONDARY, display: 'block', marginBottom: 5 }}>
-                Last-minute discount (₹, optional)
+                Discount (₹/hr, optional)
               </label>
               <input type="number" min="0" placeholder="e.g. 5" value={form.discount}
                 onChange={e => setForm(f => ({ ...f, discount: e.target.value }))} style={INP_STYLE} />
@@ -294,7 +262,7 @@ export default function SlotConfigClient({
               borderRadius: 10, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: '#0A5E3F',
             }}>
               <strong>Preview:</strong> {form.start}–{form.end} · {daysDisplay(form.days)} · ₹{form.price}/hr
-              {form.discount ? ` · ₹${form.discount} last-min discount` : ''}
+              {form.discount ? ` · ₹${form.discount} discount` : ''}
             </div>
           )}
 

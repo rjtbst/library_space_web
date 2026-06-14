@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { createServerSupabaseClient, getSupabaseUser } from '@/lib/supabase/server'
 import type { ActionResult } from '@/lib/actions/auth'
 import { z } from 'zod'
-import { log, logError, logWarn, timed } from '@/lib/logger'
+import { log, logError, timed } from '@/lib/logger'
 import {
   nowIST,
   todayRangeIST,
@@ -15,6 +15,17 @@ import {
   getISTHour,
   validateISTRange,
 } from '@/lib/ist'
+import {
+  fetchSlotConfigs,
+  upsertSlotConfig as upsertSlotConfigDb,
+  toggleSlotConfig as toggleSlotConfigDb,
+} from '@/lib/booking/slotConfigService'
+import { validateBookingWindow, validateOperatingHours } from '@/lib/booking/bookingValidation'
+import type { SlotConfig, SlotConfigInput } from '@/lib/booking/types'
+
+// Re-exported for backward compatibility — components import SlotConfig from
+// '@/lib/actions/owner'. The type now lives in '@/lib/booking/types'.
+export type { SlotConfig, SlotConfigInput }
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TIMEZONE STRATEGY
@@ -637,11 +648,23 @@ export async function manualBookSeat(
   }
 
   const [libRes, seatRes] = await Promise.all([
-    supabase.from('libraries').select('owner_id').eq('id', libraryId).maybeSingle(),
+    supabase.from('libraries').select('owner_id, open_time, close_time').eq('id', libraryId).maybeSingle(),
     supabase.from('seats').select('id, is_active, library_id').eq('id', seatId).maybeSingle(),
   ])
 
   if ((libRes.data as any)?.owner_id !== user.id) return { success: false, error: 'Access denied' }
+
+  // Same operating-hours / past-time checks applied to student and staff bookings.
+  // Owners can record walk-ins with a free-form amount (cash/UPI), so this
+  // validates the BOOKING WINDOW only — pricing is left to the owner's input.
+  const windowCheck = validateBookingWindow({
+    startTime,
+    endTime,
+    openTime:  (libRes.data as any)?.open_time  ?? '00:00:00',
+    closeTime: (libRes.data as any)?.close_time ?? '23:59:59',
+    graceMinutes: 5,
+  })
+  if (windowCheck.ok === false) return { success: false, error: windowCheck.error }
   if (!seatRes.data || seatRes.data.library_id !== libraryId) return { success: false, error: 'Seat not found in this library' }
   if (!seatRes.data.is_active) return { success: false, error: 'Seat is inactive — activate it first' }
 
@@ -710,7 +733,7 @@ export async function extendBooking(
   if (!user) return { success: false, error: 'Not authenticated' }
 
   const { data: lib } = await supabase
-    .from('libraries').select('owner_id').eq('id', libraryId).maybeSingle()
+    .from('libraries').select('owner_id, open_time, close_time').eq('id', libraryId).maybeSingle()
   if ((lib as any)?.owner_id !== user.id) return { success: false, error: 'Access denied' }
 
   const { data: booking, error: fetchErr } = await supabase
@@ -733,6 +756,14 @@ export async function extendBooking(
   if (newEndMs - startMs > 24 * 3_600_000)
     return { success: false, error: 'Total booking duration cannot exceed 24 hours' }
 
+  const windowCheck = validateOperatingHours(
+    booking.start_time as string,
+    newEndTime,
+    (lib as any)?.open_time  ?? '00:00:00',
+    (lib as any)?.close_time ?? '23:59:59',
+  )
+  if (windowCheck.ok === false) return { success: false, error: windowCheck.error }
+
   const { data: conflict } = await supabase
     .from('bookings')
     .select('id')
@@ -749,6 +780,7 @@ export async function extendBooking(
     .from('bookings').update({ end_time: newEndTime } as never).eq('id', bookingId)
 
   if (updateErr) { logError('extendBooking', 'Update failed', updateErr); return { success: false, error: updateErr.message } }
+
 
   log('extendBooking', `booking=${bookingId} extended to ${newEndTime}`)
   revalidatePath('/dashboard/seat-manager')
@@ -800,79 +832,67 @@ export async function forceFreeSeat(
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SLOT CONFIG
+   ─────────────────────────────────────────────────────────────────────────
+   Slots live in the `slot_configs` table (see supabase/migrations).
+   SlotConfig / SlotConfigInput types and all validation live in
+   lib/booking/* — this file only adds the owner-specific ownership check
+   before delegating to the shared service.
 ═══════════════════════════════════════════════════════════════════════════ */
-export type SlotConfig = {
-  id:        string
-  start:     string
-  end:       string
-  days:      string
-  price:     number
-  discount:  number
-  is_active: boolean
-}
 
-async function getLibMeta(
+/** Verifies the current user owns `libraryId`. Returns null if not. */
+async function verifyLibraryOwner(
   supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
   libraryId: string,
-  userId:    string,
-) {
+  userId: string,
+): Promise<true | null> {
   const { data: lib, error } = await supabase
-    .from('libraries').select('owner_id, description').eq('id', libraryId).maybeSingle()
+    .from('libraries').select('owner_id').eq('id', libraryId).maybeSingle()
   if (error || !lib || (lib as any).owner_id !== userId) return null
-  let meta: { slots?: SlotConfig[] } = {}
-  try { meta = JSON.parse((lib as any).description ?? '{}') }
-  catch { logWarn('getLibMeta', `Failed to parse description for library=${libraryId}`) }
-  return meta
+  return true
 }
 
 export async function getSlotConfigs(libraryId: string): Promise<SlotConfig[]> {
   const { supabase, user } = await getSupabaseUser()
   if (!user) return []
-  const meta = await getLibMeta(supabase, libraryId, user.id)
-  return meta?.slots ?? []
+  if (!(await verifyLibraryOwner(supabase, libraryId, user.id))) return []
+  return fetchSlotConfigs(supabase, libraryId)
 }
 
 export async function upsertSlotConfig(
   libraryId: string,
-  slot: Omit<SlotConfig, 'id'> & { id?: string },
-): Promise<ActionResult> {
+  slot: SlotConfigInput,
+): Promise<ActionResult<SlotConfig>> {
   const { supabase, user } = await getSupabaseUser()
   if (!user) return { success: false, error: 'Not authenticated' }
-  const meta = await getLibMeta(supabase, libraryId, user.id)
-  if (!meta) return { success: false, error: 'Access denied' }
-  const slots: SlotConfig[] = meta.slots ?? []
-  if (slot.id) {
-    const idx = slots.findIndex((s) => s.id === slot.id)
-    if (idx >= 0) slots[idx] = { ...slot, id: slot.id }
-    else slots.push({ ...slot, id: slot.id })
-  } else {
-    slots.push({ ...slot, id: crypto.randomUUID() })
-  }
-  const { error } = await supabase
-    .from('libraries').update({ description: JSON.stringify({ ...meta, slots }) }).eq('id', libraryId)
-  if (error) { logError('upsertSlotConfig', 'Update failed', error); return { success: false, error: error.message } }
+  if (!(await verifyLibraryOwner(supabase, libraryId, user.id)))
+    return { success: false, error: 'Access denied' }
+
+  const result = await upsertSlotConfigDb(supabase, libraryId, slot, user.id)
+  if (result.success === false) return result
+
+  log('upsertSlotConfig', `library=${libraryId} slot=${result.data.id}`)
   revalidatePath('/dashboard/slot-config')
-  return { success: true, data: undefined }
+  revalidatePath('/dashboard/bookings')
+  return result
 }
 
 export async function toggleSlotConfig(
   libraryId: string,
   slotId:    string,
   is_active: boolean,
-): Promise<ActionResult> {
+): Promise<ActionResult<SlotConfig>> {
   const { supabase, user } = await getSupabaseUser()
   if (!user) return { success: false, error: 'Not authenticated' }
-  const meta = await getLibMeta(supabase, libraryId, user.id)
-  if (!meta) return { success: false, error: 'Access denied' }
-  const slots: SlotConfig[] = meta.slots ?? []
-  const slot = slots.find((s) => s.id === slotId)
-  if (!slot) return { success: false, error: 'Slot not found' }
-  slot.is_active = is_active
-  const { error } = await supabase
-    .from('libraries').update({ description: JSON.stringify({ ...meta, slots }) }).eq('id', libraryId)
-  if (error) { logError('toggleSlotConfig', 'Update failed', error); return { success: false, error: error.message } }
+  if (!(await verifyLibraryOwner(supabase, libraryId, user.id)))
+    return { success: false, error: 'Access denied' }
+
+  const result = await toggleSlotConfigDb(supabase, libraryId, slotId, is_active)
+  if (result.success === false) return result
+
+  log('toggleSlotConfig', `library=${libraryId} slot=${slotId} is_active=${is_active}`)
   revalidatePath('/dashboard/slot-config')
-  return { success: true, data: undefined }
+  revalidatePath('/dashboard/bookings')
+  return result
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1124,3 +1144,157 @@ export async function updateLibraryAmenities(
 /* ═══════════════════════════════════════════════════════════════════════════
    LIBRARY EDIT — PHOTOS
 ═══════════════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIBRARY EDIT — PHOTOS
+═══════════════════════════════════════════════════════════════════════════ */
+
+/** Returns all photos for a library */
+export async function getLibraryPhotos(
+  libraryId: string,
+): Promise<{ id: string; image_url: string; is_cover: boolean }[]> {
+  const { supabase, user } = await getSupabaseUser()
+  if (!user) return []
+
+  const { data, error } = await supabase
+    .from('library_images')
+    .select('id, image_url, is_cover')
+    .eq('library_id', libraryId)
+    .eq('deleted', false)
+    .order('is_cover', { ascending: false })  // covers first
+    .order('created_at', { ascending: true })
+
+  if (error) { logError('getLibraryPhotos', 'Query failed', error); return [] }
+  return (data ?? []).map(r => ({
+    id:        r.id,
+    image_url: r.image_url ?? '',
+    is_cover:  r.is_cover ?? false,
+  }))
+}
+
+/**
+ * Uploads a new photo and stores it.
+ *
+ * NOTE: This action receives base64 data from the client and uploads to
+ * Supabase Storage bucket "library-images". Make sure that bucket exists
+ * and the service-role key has write access.
+ *
+ * Bucket name: "library-images"  (create via Supabase dashboard if needed)
+ * Path pattern: `{libraryId}/{timestamp}-{random}.{ext}`
+ */
+export async function addLibraryPhoto(
+  libraryId: string,
+  base64Data: string,
+  mimeType:   string,
+  isCover:    boolean,
+): Promise<ActionResult<{ photoId: string; imageUrl: string }>> {
+  const { supabase, user } = await getSupabaseUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  const { data: lib } = await supabase
+    .from('libraries').select('owner_id').eq('id', libraryId).maybeSingle()
+  if ((lib as any)?.owner_id !== user.id) return { success: false, error: 'Access denied' }
+
+  // Convert base64 → Uint8Array
+  const binaryStr = atob(base64Data)
+  const bytes     = new Uint8Array(binaryStr.length)
+  for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
+
+  const ext      = mimeType.split('/')[1] ?? 'jpg'
+  const fileName = `${libraryId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+  const BUCKET   = 'library-images'
+
+  const { data: uploadData, error: uploadErr } = await supabase.storage
+    .from(BUCKET)
+    .upload(fileName, bytes, { contentType: mimeType, upsert: false })
+
+  if (uploadErr) { logError('addLibraryPhoto', 'Upload failed', uploadErr); return { success: false, error: uploadErr.message } }
+
+  const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(uploadData.path)
+  const imageUrl = urlData.publicUrl
+
+  // If this is a cover, unset the old cover
+  if (isCover) {
+    await supabase
+      .from('library_images')
+      .update({ is_cover: false })
+      .eq('library_id', libraryId)
+      .eq('is_cover', true)
+  }
+
+  const { data: photo, error: dbErr } = await supabase
+    .from('library_images')
+    .insert({ library_id: libraryId, image_url: imageUrl, is_cover: isCover, deleted: false })
+    .select('id')
+    .single()
+
+  if (dbErr || !photo) {
+    logError('addLibraryPhoto', 'DB insert failed', dbErr)
+    return { success: false, error: dbErr?.message ?? 'Failed to save photo record' }
+  }
+
+  log('addLibraryPhoto', `library=${libraryId} photo=${photo.id} cover=${isCover}`)
+  revalidatePath('/dashboard/my-libraries')
+  return { success: true, data: { photoId: photo.id, imageUrl } }
+}
+
+/** Sets an existing photo as the cover (unsets all others first) */
+export async function updateLibraryCover(
+  libraryId: string,
+  photoId:   string,
+): Promise<ActionResult> {
+  const { supabase, user } = await getSupabaseUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  const { data: lib } = await supabase
+    .from('libraries').select('owner_id').eq('id', libraryId).maybeSingle()
+  if ((lib as any)?.owner_id !== user.id) return { success: false, error: 'Access denied' }
+
+  // Verify photo belongs to this library
+  const { data: photo } = await supabase
+    .from('library_images').select('library_id').eq('id', photoId).maybeSingle()
+  if ((photo as any)?.library_id !== libraryId) return { success: false, error: 'Photo not found in this library' }
+
+  // Unset all covers first, then set this one
+  const { error: unsetErr } = await supabase
+    .from('library_images')
+    .update({ is_cover: false })
+    .eq('library_id', libraryId)
+  if (unsetErr) { logError('updateLibraryCover', 'Unset failed', unsetErr); return { success: false, error: unsetErr.message } }
+
+  const { error: setErr } = await supabase
+    .from('library_images')
+    .update({ is_cover: true })
+    .eq('id', photoId)
+  if (setErr) { logError('updateLibraryCover', 'Set failed', setErr); return { success: false, error: setErr.message } }
+
+  log('updateLibraryCover', `library=${libraryId} photo=${photoId}`)
+  revalidatePath('/dashboard/my-libraries')
+  return { success: true, data: undefined }
+}
+
+/** Soft-deletes a library photo */
+export async function deleteLibraryPhoto(
+  libraryId: string,
+  photoId:   string,
+): Promise<ActionResult> {
+  const { supabase, user } = await getSupabaseUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  const { data: lib } = await supabase
+    .from('libraries').select('owner_id').eq('id', libraryId).maybeSingle()
+  if ((lib as any)?.owner_id !== user.id) return { success: false, error: 'Access denied' }
+
+  const { data: photo } = await supabase
+    .from('library_images').select('library_id, is_cover').eq('id', photoId).maybeSingle()
+  if ((photo as any)?.library_id !== libraryId) return { success: false, error: 'Photo not found in this library' }
+
+  // Soft-delete
+  const { error } = await supabase
+    .from('library_images').update({ deleted: true, is_cover: false }).eq('id', photoId)
+
+  if (error) { logError('deleteLibraryPhoto', 'Delete failed', error); return { success: false, error: error.message } }
+
+  log('deleteLibraryPhoto', `library=${libraryId} photo=${photoId}`)
+  revalidatePath('/dashboard/my-libraries')
+  return { success: true, data: undefined }
+}

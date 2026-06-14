@@ -5,7 +5,7 @@
  * Fetches library info, available books, and the current student profile
  * in parallel, then passes everything to LibraryDetailClient.
  *
- * LibraryDetailClient handles:
+ * LibraryDetailClien handles:
  *  - Image gallery
  *  - Amenities, hours, distance
  *  - Book Seat tab: datetime picker → SeatGrid → Razorpay checkout

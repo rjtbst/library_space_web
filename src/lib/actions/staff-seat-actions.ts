@@ -23,7 +23,7 @@ import type { ActionResult }         from '@/lib/actions/auth'
 import { nowIST, validateISTRange }  from '@/lib/ist'
 import { log, logError }             from '@/lib/logger'
 import { fetchActiveSlotConfigs }    from '@/lib/booking/slotConfigService'
-import { validateBookingWindow }     from '@/lib/booking/bookingValidation'
+import { validateBooking }           from '@/lib/booking/slotBoundaryValidation'
 import type { SlotConfig }           from '@/lib/booking/types'
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -344,19 +344,13 @@ export async function seniorManualBook(
   if (!staffRow || staffRow.role !== 'senior_staff')
     return { success: false, error: 'Access denied — senior staff only' }
 
-  // Same operating-hours / past-time checks as student & owner booking flows.
-  // Staff record walk-ins with a free-form amount, so this validates the
-  // BOOKING WINDOW only — pricing is left to the staff member's input.
-  const { data: libRow } = await supabase
-    .from('libraries').select('open_time, close_time').eq('id', libraryId).maybeSingle()
-
-  const windowCheck = validateBookingWindow({
-    startTime,
-    endTime,
-    openTime:  (libRow as any)?.open_time  ?? '00:00:00',
-    closeTime: (libRow as any)?.close_time ?? '23:59:59',
-    graceMinutes: 5,
-  })
+  // SLOT-ONLY ARCHITECTURE: the booking must fit entirely inside one active
+  // slot — same check used by student.initiateBooking and
+  // owner.manualBookSeat (lib/booking/slotBoundaryValidation.ts). Staff
+  // record walk-ins with a free-form amount, so this validates the BOOKING
+  // WINDOW only — pricing is left to the staff member's input.
+  const slots = await fetchActiveSlotConfigs(supabase, libraryId)
+  const windowCheck = validateBooking({ slots, startTime, endTime, graceMinutes: 5 })
   if (windowCheck.ok === false) return { success: false, error: windowCheck.error }
 
   // Seat validity

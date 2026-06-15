@@ -4,6 +4,7 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import type { LibraryCard } from '@/lib/actions/student'
+import { effectiveSlotRate } from '@/lib/booking/types'
 import { MapPin, Star, Clock, Navigation2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -12,32 +13,43 @@ const AMENITY_ICON: Record<string, string> = {
   Locker: '🔐', Printing: '🖨️', CCTV: '📹', 'Power Backup': '⚡',
 }
 
-function fmtTime(raw: string): string {
-  const [hStr, mStr] = raw.split(':')
-  const h = parseInt(hStr ?? '0', 10)
-  const m = parseInt(mStr ?? '0', 10)
-  const ampm = h >= 12 ? 'PM' : 'AM'
-  const h12  = h % 12 === 0 ? 12 : h % 12
-  return `${h12}:${String(m).padStart(2, '0')} ${ampm}`
-}
+/**
+ * SLOT-ONLY ARCHITECTURE — pricing display.
+ *
+ * There is no longer a single "library price" (base_price). A library can
+ * have multiple active slots with different rates throughout the day, so
+ * the card shows:
+ *   - if the library is OPEN right now: the rate of the CURRENT slot
+ *     (status.currentSlot), prefixed "Now:" — this is exactly the rate
+ *     lib/booking/pricing.ts would apply to a booking starting right now.
+ *   - if CLOSED, or no slots configured at all: the lowest active rate
+ *     across all slots ("From ₹X/hr"), or nothing if there are no active
+ *     slots.
+ *
+ * This keeps the card consistent with lib/booking/pricing.ts — it never
+ * shows a number that initiateBooking/calculateBookingAmount couldn't
+ * also produce for *some* booking at this library.
+ */
+function priceDisplay(library: LibraryCard): { label: string; rate: number } | null {
+  const activeSlots = library.slots.filter((s) => s.is_active)
+  if (activeSlots.length === 0) return null
 
-function isOpenNow(openRaw: string, closeRaw: string): boolean {
-  try {
-    const d    = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
-    const now  = d.getHours() * 60 + d.getMinutes()
-    const parse = (t: string) => {
-      const p = t.split(':').map(Number)
-      return (p[0] ?? 0) * 60 + (p[1] ?? 0)
-    }
-    return now >= parse(openRaw) && now < parse(closeRaw)
-  } catch { return false }
+  if (library.status.isOpen && library.status.currentSlot) {
+    return { label: 'Now', rate: effectiveSlotRate(library.status.currentSlot) }
+  }
+
+  const lowest = [...activeSlots].sort(
+    (a, b) => effectiveSlotRate(a) - effectiveSlotRate(b),
+  )[0]
+  return { label: 'From', rate: effectiveSlotRate(lowest) }
 }
 
 export default function LibraryCardTile({ library }: { library: LibraryCard }) {
-  const open      = isOpenNow(library.open_time, library.close_time)
+  const open      = library.status.isOpen
   const occupancy = library.total_seats > 0
     ? Math.round(((library.total_seats - library.available_seats) / library.total_seats) * 100)
     : 0
+  const price = priceDisplay(library)
 
   return (
     <Link
@@ -61,7 +73,7 @@ export default function LibraryCardTile({ library }: { library: LibraryCard }) {
           <div className="w-full h-full flex items-center justify-center opacity-30 text-5xl">📚</div>
         )}
 
-        {/* Open/Closed badge */}
+        {/* Open/Closed badge — driven by slot_configs via resolveLibraryStatus */}
         <div className="absolute top-2.5 left-2.5">
           <span className={cn(
             'text-[10px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm',
@@ -114,9 +126,10 @@ export default function LibraryCardTile({ library }: { library: LibraryCard }) {
           </span>
         </div>
 
+        {/* Today's hours — derived from slot_configs (lib/booking/libraryStatus.ts) */}
         <div className="flex items-center gap-1.5 mt-2 text-[11px] text-[#6B6560]">
           <Clock className="w-3 h-3 flex-shrink-0" />
-          {fmtTime(library.open_time)} – {fmtTime(library.close_time)}
+          {library.status.todayHoursLabel}
         </div>
 
         {/* Seat availability bar */}
@@ -163,11 +176,18 @@ export default function LibraryCardTile({ library }: { library: LibraryCard }) {
           </div>
         )}
 
-        {/* Price */}
+        {/* Price — slot-based, see priceDisplay() above */}
         <div className="flex items-center justify-between mt-3 pt-3 border-t border-[#F0EDE8]">
           <div>
-            <span className="text-[13px] font-bold text-[#1A1714]">₹{library.base_price}</span>
-            <span className="text-[10px] text-[#9B9591]">/hr</span>
+            {price ? (
+              <>
+                <span className="text-[10px] text-[#9B9591] mr-1">{price.label}</span>
+                <span className="text-[13px] font-bold text-[#1A1714]">₹{price.rate}</span>
+                <span className="text-[10px] text-[#9B9591]">/hr</span>
+              </>
+            ) : (
+              <span className="text-[11px] text-[#9B9591]">No slots configured</span>
+            )}
           </div>
           {library.plans.length > 0 && (
             <span className="text-[10px] px-2 py-0.5 bg-[#EEF2FF] text-[#1246FF] font-semibold rounded-full">

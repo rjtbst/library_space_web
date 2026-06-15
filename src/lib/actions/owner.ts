@@ -17,10 +17,12 @@ import {
 } from '@/lib/ist'
 import {
   fetchSlotConfigs,
+  fetchActiveSlotConfigs,
   upsertSlotConfig as upsertSlotConfigDb,
   toggleSlotConfig as toggleSlotConfigDb,
 } from '@/lib/booking/slotConfigService'
-import { validateBookingWindow, validateOperatingHours } from '@/lib/booking/bookingValidation'
+import { validateBooking } from '@/lib/booking/slotBoundaryValidation'
+import { getLibraryBookingRevenue, getSubscriptionRevenueForLibrary } from '@/lib/booking/revenue'
 import type { SlotConfig, SlotConfigInput } from '@/lib/booking/types'
 
 // Re-exported for backward compatibility — components import SlotConfig from
@@ -65,7 +67,12 @@ export type OwnerLibrary = {
   active_seats: number
   member_count: number
   staff_count: number
+  /** Booking-tied revenue (online + manual + walk-in), current calendar month */
   month_revenue: number
+  /** Subscription-purchase revenue attributable to this library, current calendar month */
+  month_subscription_revenue: number
+  /** month_revenue + month_subscription_revenue — see lib/booking/revenue.ts */
+  month_total_revenue: number
 }
 
 export async function getOwnerLibraries(): Promise<OwnerLibrary[]> {
@@ -123,10 +130,21 @@ export async function getOwnerLibraries(): Promise<OwnerLibrary[]> {
       payByBooking[p.booking_id] = Number(p.amount ?? 0)
     }
 
+    // Subscription revenue per library — centralized in lib/booking/revenue.ts
+    // so this matches getDashboardStats exactly. Run in parallel per library;
+    // libIds is typically small (a handful of libraries per owner).
+    const subscriptionRevenueByLib = await Promise.all(
+      libIds.map((id) => getSubscriptionRevenueForLibrary(supabase, id, mStart, mEnd)),
+    )
+    const subRevenueById: Record<string, number> = {}
+    libIds.forEach((id, i) => { subRevenueById[id] = subscriptionRevenueByLib[i] })
+
     return libs.map((lib) => {
       const seats      = seatsByLib[lib.id] ?? []
       const planIds    = (plansByLib[lib.id] ?? []).map((p) => p.plan_id)
       const bookingIds = (bookingsByLib[lib.id] ?? []).map((b) => b.id)
+      const monthRevenue = bookingIds.reduce((sum, bid) => sum + (payByBooking[bid] ?? 0), 0)
+      const monthSubRevenue = subRevenueById[lib.id] ?? 0
       return {
         id:            lib.id,
         name:          lib.name,
@@ -138,7 +156,9 @@ export async function getOwnerLibraries(): Promise<OwnerLibrary[]> {
         active_seats:  seats.filter((s) => s.is_active).length,
         member_count:  planIds.reduce((sum, pid) => sum + (subsByPlan[pid] ?? 0), 0),
         staff_count:   (staffByLib[lib.id] ?? []).length,
-        month_revenue: bookingIds.reduce((sum, bid) => sum + (payByBooking[bid] ?? 0), 0),
+        month_revenue:               monthRevenue,
+        month_subscription_revenue:  monthSubRevenue,
+        month_total_revenue:         monthRevenue + monthSubRevenue,
       }
     })
   })
@@ -170,7 +190,7 @@ export async function getDashboardStats(libraryId: string): Promise<DashboardSta
     const yesterday = yesterdayRangeIST()
     const { start: mStart } = monthRangeIST()
 
-    const [todayBkRes, ystBkRes, liveOccRes, seatsRes, planIdsRes] = await Promise.all([
+    const [todayBkRes, ystBkRes, liveOccRes, seatsRes, planIdsRes, todayRev, ystRev] = await Promise.all([
       supabase.from('bookings').select('id, status').eq('library_id', libraryId)
         .gte('start_time', today.start).lte('start_time', today.end),
       supabase.from('bookings').select('id').eq('library_id', libraryId)
@@ -180,19 +200,17 @@ export async function getDashboardStats(libraryId: string): Promise<DashboardSta
         .in('status', ['confirmed', 'checked_in', 'held'] as never[]),
       supabase.from('seats').select('id, is_active').eq('library_id', libraryId),
       supabase.from('plan_libraries').select('plan_id').eq('library_id', libraryId),
+      // Centralized booking-revenue calculation (lib/booking/revenue.ts) —
+      // same query shape used by getOwnerLibraries' month_revenue, so
+      // "today's revenue" and "this month's revenue" are never computed two
+      // different ways.
+      getLibraryBookingRevenue(supabase, libraryId, today.start, today.end),
+      getLibraryBookingRevenue(supabase, libraryId, yesterday.start, yesterday.end),
     ])
 
-    const todayBkIds = todayBkRes.data?.map((b) => b.id) ?? []
-    const ystBkIds   = ystBkRes.data?.map((b) => b.id)   ?? []
-    const planIds    = planIdsRes.data?.map((r) => r.plan_id) ?? []
+    const planIds = planIdsRes.data?.map((r) => r.plan_id) ?? []
 
-    const [todayRevRes, ystRevRes, totalMemRes, newMemRes] = await Promise.all([
-      todayBkIds.length
-        ? supabase.from('payments').select('amount').eq('status', 'paid' as never).in('booking_id', todayBkIds)
-        : Promise.resolve({ data: [] as { amount: number }[] }),
-      ystBkIds.length
-        ? supabase.from('payments').select('amount').eq('status', 'paid' as never).in('booking_id', ystBkIds)
-        : Promise.resolve({ data: [] as { amount: number }[] }),
+    const [totalMemRes, newMemRes] = await Promise.all([
       planIds.length
         ? supabase.from('subscriptions').select('id', { count: 'exact', head: true })
             .in('plan_id', planIds).eq('status', 'active' as never)
@@ -208,12 +226,10 @@ export async function getDashboardStats(libraryId: string): Promise<DashboardSta
     const totalActive = seats.filter((s) => s.is_active).length
     const occupied    = liveOcc.filter((b) => ['confirmed', 'checked_in'].includes(b.status as string)).length
     const held        = liveOcc.filter((b) => b.status === 'held').length
-    const sumAmt      = (rows: { amount: number }[] | null) =>
-      rows?.reduce((s, p) => s + Number(p.amount ?? 0), 0) ?? 0
 
     return {
-      today_revenue:      sumAmt(todayRevRes.data),
-      yesterday_revenue:  sumAmt(ystRevRes.data),
+      today_revenue:      todayRev,
+      yesterday_revenue:  ystRev,
       today_bookings:     todayBkRes.data?.length ?? 0,
       yesterday_bookings: ystBkRes.data?.length ?? 0,
       occupancy_pct:      totalActive ? Math.round((occupied / totalActive) * 100) : 0,
@@ -328,6 +344,13 @@ export async function getTodayBookings(libraryId: string): Promise<TodayBooking[
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SLOT HEATMAP
+   ─────────────────────────────────────────────────────────────────────────
+   SLOT-ONLY ARCHITECTURE: buckets are now the library's ACTUAL configured
+   slots (slot_configs), not hardcoded 3-hour display bands. A booking is
+   counted in the slot whose [start,end) contains its start_time — the same
+   containment rule used for pricing (lib/booking/pricing.ts) — so "slot
+   popularity" on the dashboard matches the slots the owner actually
+   configured (and their labels/prices), rather than an unrelated fixed grid.
 ═══════════════════════════════════════════════════════════════════════════ */
 export type SlotBand = {
   label: string
@@ -344,34 +367,45 @@ export async function getSlotHeatmap(libraryId: string): Promise<SlotBand[]> {
 
     const since = pastMonthsStartIST(1)
 
-    const { data, error } = await supabase
-      .from('bookings')
-      .select('start_time')
-      .eq('library_id', libraryId)
-      .gte('start_time', since)
-      .in('status', ['confirmed', 'checked_in', 'completed'] as never[])
+    const [bookingsRes, slots] = await Promise.all([
+      supabase
+        .from('bookings')
+        .select('start_time')
+        .eq('library_id', libraryId)
+        .gte('start_time', since)
+        .in('status', ['confirmed', 'checked_in', 'completed'] as never[]),
+      fetchActiveSlotConfigs(supabase, libraryId),
+    ])
 
-    if (error) { logError('getSlotHeatmap', 'Query failed', error); return [] }
+    if (bookingsRes.error) { logError('getSlotHeatmap', 'Query failed', bookingsRes.error); return [] }
+    if (slots.length === 0) return []
 
-    const bands = [
-      { label: '6–9 AM',   start_h: 6,  end_h: 9  },
-      { label: '9 AM–12',  start_h: 9,  end_h: 12 },
-      { label: '12–3 PM',  start_h: 12, end_h: 15 },
-      { label: '3–6 PM',   start_h: 15, end_h: 18 },
-      { label: '6–9 PM',   start_h: 18, end_h: 21 },
-      { label: '9–10 PM',  start_h: 21, end_h: 22 },
-    ]
+    const data = bookingsRes.data ?? []
 
-    const counts = bands.map((b) => ({
-      ...b,
-      count: data?.filter((bk) => {
-        const h = getISTHour(bk.start_time)
-        return h >= b.start_h && h < b.end_h
-      }).length ?? 0,
-    }))
+    const bands = [...slots]
+      .sort((a, b) => a.start.localeCompare(b.start))
+      .map((slot) => {
+        const startH = parseInt(slot.start.split(':')[0] ?? '0', 10)
+        const endH   = parseInt(slot.end.split(':')[0]   ?? '0', 10)
+        return {
+          label:   `${slot.start}–${slot.end}`,
+          start_h: startH,
+          end_h:   endH,
+          count: data.filter((bk) => {
+            const h = getISTHour(bk.start_time)
+            // Same containment convention as the heatmap previously used —
+            // hour-granularity bucketing into [start_h, end_h). Bookings
+            // whose minute offset places them technically outside the slot
+            // (e.g. a 09:00-09:30 slot vs a 09:45 booking start) won't occur
+            // in practice since slotBoundaryValidation rejects such bookings
+            // at creation time.
+            return h >= startH && h < endH
+          }).length,
+        }
+      })
 
-    const max = Math.max(...counts.map((c) => c.count), 1)
-    return counts.map((c) => ({ ...c, pct: Math.round((c.count / max) * 100) }))
+    const max = Math.max(...bands.map((b) => b.count), 1)
+    return bands.map((b) => ({ ...b, pct: Math.round((b.count / max) * 100) }))
   })
 }
 
@@ -648,23 +682,21 @@ export async function manualBookSeat(
   }
 
   const [libRes, seatRes] = await Promise.all([
-    supabase.from('libraries').select('owner_id, open_time, close_time').eq('id', libraryId).maybeSingle(),
+    supabase.from('libraries').select('owner_id').eq('id', libraryId).maybeSingle(),
     supabase.from('seats').select('id, is_active, library_id').eq('id', seatId).maybeSingle(),
   ])
 
   if ((libRes.data as any)?.owner_id !== user.id) return { success: false, error: 'Access denied' }
 
-  // Same operating-hours / past-time checks applied to student and staff bookings.
-  // Owners can record walk-ins with a free-form amount (cash/UPI), so this
-  // validates the BOOKING WINDOW only — pricing is left to the owner's input.
-  const windowCheck = validateBookingWindow({
-    startTime,
-    endTime,
-    openTime:  (libRes.data as any)?.open_time  ?? '00:00:00',
-    closeTime: (libRes.data as any)?.close_time ?? '23:59:59',
-    graceMinutes: 5,
-  })
+  // SLOT-ONLY ARCHITECTURE: the booking must fit entirely inside one active
+  // slot — this is the same check used by student.initiateBooking and
+  // staff.seniorManualBook (lib/booking/slotBoundaryValidation.ts). Owners
+  // can still record a free-form `amountPaid` for walk-ins, but the BOOKING
+  // WINDOW itself must be valid per slot_configs.
+  const slots = await fetchActiveSlotConfigs(supabase, libraryId)
+  const windowCheck = validateBooking({ slots, startTime, endTime, graceMinutes: 5 })
   if (windowCheck.ok === false) return { success: false, error: windowCheck.error }
+
   if (!seatRes.data || seatRes.data.library_id !== libraryId) return { success: false, error: 'Seat not found in this library' }
   if (!seatRes.data.is_active) return { success: false, error: 'Seat is inactive — activate it first' }
 
@@ -733,7 +765,7 @@ export async function extendBooking(
   if (!user) return { success: false, error: 'Not authenticated' }
 
   const { data: lib } = await supabase
-    .from('libraries').select('owner_id, open_time, close_time').eq('id', libraryId).maybeSingle()
+    .from('libraries').select('owner_id').eq('id', libraryId).maybeSingle()
   if ((lib as any)?.owner_id !== user.id) return { success: false, error: 'Access denied' }
 
   const { data: booking, error: fetchErr } = await supabase
@@ -756,12 +788,16 @@ export async function extendBooking(
   if (newEndMs - startMs > 24 * 3_600_000)
     return { success: false, error: 'Total booking duration cannot exceed 24 hours' }
 
-  const windowCheck = validateOperatingHours(
-    booking.start_time as string,
-    newEndTime,
-    (lib as any)?.open_time  ?? '00:00:00',
-    (lib as any)?.close_time ?? '23:59:59',
-  )
+  // SLOT-ONLY ARCHITECTURE: the extended [start, newEnd) range must still fit
+  // entirely inside the same active slot that contained the original
+  // booking — extending past a slot's end is the same as the slot-boundary
+  // rejection at creation time (lib/booking/slotBoundaryValidation.ts).
+  const slots = await fetchActiveSlotConfigs(supabase, libraryId)
+  const windowCheck = validateBooking({
+    slots,
+    startTime: booking.start_time as string,
+    endTime:   newEndTime,
+  })
   if (windowCheck.ok === false) return { success: false, error: windowCheck.error }
 
   const { data: conflict } = await supabase

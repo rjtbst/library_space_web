@@ -84,6 +84,30 @@ export async function fetchActiveSlotConfigs(
   return all.filter(s => s.is_active)
 }
 
+/**
+ * Returns true iff the library has at least one active slot config.
+ * Used by publishLibrary() — a library cannot go live with zero slots,
+ * since slot_configs is now the only source of operating hours and pricing
+ * (a library with zero active slots is permanently "closed" and unbookable).
+ */
+export async function hasActiveSlot(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase:  any,
+  libraryId: string,
+): Promise<boolean> {
+  const { count, error } = await supabase
+    .from('slot_configs')
+    .select('id', { count: 'exact', head: true })
+    .eq('library_id', libraryId)
+    .eq('is_active', true)
+
+  if (error) {
+    logError('hasActiveSlot', `library=${libraryId}`, error)
+    return false
+  }
+  return (count ?? 0) > 0
+}
+
 /* ─── Write ───────────────────────────────────────────────────────────────── */
 
 /**

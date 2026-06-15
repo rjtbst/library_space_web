@@ -9,14 +9,20 @@ import {
   Car, Coffee, ChevronLeft, ChevronRight, Users, Calendar,
   Zap as Flash,
 } from 'lucide-react'
-import { type SlotConfig, type SlotDisplayOption, slotToDisplayOption } from '@/lib/booking/types'
+import {
+  type SlotConfig,
+  type SlotDisplayOption,
+  slotToDisplayOption,
+  effectiveSlotRate,
+} from '@/lib/booking/types'
+import type { LibraryStatus } from '@/lib/booking/libraryStatus'
 import Image from 'next/image'
 
 type Plan = { id: string; name: string; price: number; duration_days: number; session_limit: string | null }
 type Library = {
   id: string; name: string; description: string | null
   city: string; area: string; address: string
-  rating: number; total_reviews: number; base_price: number
+  rating: number; total_reviews: number
   amenities: string[]; images: string[]
 }
 
@@ -26,21 +32,50 @@ const AMENITY_ICONS: Record<string, React.ElementType> = {
 const PLAN_COLORS = ['#0597A7', '#1E5CFF', '#6B3FD4', '#0A7C5C', '#C96A00']
 const GRADS = ['linear-gradient(135deg,#E0E8FF,#C7D4F7)', 'linear-gradient(135deg,#D4EDD4,#B8DDB8)', 'linear-gradient(135deg,#F0E8FF,#DDD0F7)']
 
+/**
+ * SLOT-ONLY ARCHITECTURE — header / sticky-CTA price.
+ *
+ * No single base_price exists anymore. The "from ₹X/hr" figure shown in the
+ * header and sticky CTA is the lowest effective rate across all of TODAY's
+ * active slots — i.e. the cheapest rate a student could actually book today.
+ * If the library is currently open, the CURRENT slot's rate is shown
+ * instead (labelled "Now"), since that's the rate a booking starting right
+ * now would actually receive (lib/booking/pricing.ts).
+ */
+function headerPrice(status: LibraryStatus, allSlots: SlotConfig[]): { label: string; rate: number } | null {
+  const active = allSlots.filter((s) => s.is_active)
+  if (active.length === 0) return null
+
+  if (status.isOpen && status.currentSlot) {
+    return { label: 'Now', rate: effectiveSlotRate(status.currentSlot) }
+  }
+
+  const lowest = [...active].sort((a, b) => effectiveSlotRate(a) - effectiveSlotRate(b))[0]
+  return { label: 'From', rate: effectiveSlotRate(lowest) }
+}
+
 export default function LibraryDetail({
-  library, ownerSlots, plans, freeSeats, isOpen, openHours, activeSub,
+  library, ownerSlots, plans, freeSeats, status, activeSub,
 }: {
   library:    Library
+  /** ALL slot configs (active + inactive) for the library — used for both
+   *  the "Available Time Slots" list (active only, via slotToDisplayOption)
+   *  and the header/CTA price (headerPrice, above). */
   ownerSlots: SlotConfig[]
   plans:      Plan[]
   freeSeats:  number
-  isOpen:     boolean
-  openHours:  string
+  /** From lib/booking/libraryStatus.ts — single source of truth for
+   *  open/closed and "today's hours" display. Replaces isOpen/openHours. */
+  status:     LibraryStatus
   activeSub:  { planName: string; endDate: string } | null
 }) {
   const router  = useRouter()
   const [imgIdx, setImgIdx] = useState(0)
 
-  const slotOptions: SlotDisplayOption[] = ownerSlots.map(slotToDisplayOption)
+  const activeSlots = ownerSlots.filter((s) => s.is_active)
+  const slotOptions: SlotDisplayOption[] = activeSlots.map(slotToDisplayOption)
+  const price = headerPrice(status, ownerSlots)
+  const isOpen = status.isOpen
 
   return (
     <div className="p-5 pb-32 max-w-3xl mx-auto">
@@ -55,7 +90,9 @@ export default function LibraryDetail({
           isOpen ? 'bg-[#E2F5EE] text-[#065F46]' : 'bg-[#FDEAEA] text-[#9B1C1C]',
         ].join(' ')}>
           <span className="text-[8px]">●</span>
-          {isOpen ? `Open · until ${openHours.split('–')[1]?.trim()}` : `Closed · opens ${openHours.split('–')[0]?.trim()}`}
+          {isOpen
+            ? `Open · ${status.currentSlot ? `until ${status.currentSlot.end}` : 'now'}`
+            : `Closed — ${status.todayHoursLabel}`}
         </span>
       </div>
 
@@ -94,13 +131,18 @@ export default function LibraryDetail({
             </span>
           </div>
           <div className="flex items-center gap-1 text-[12px] text-[#6E7F94]">
-            <Clock className="w-3 h-3" /> Mon–Sun · {openHours}
+            <Clock className="w-3 h-3" /> Today · {status.todayHoursLabel}
           </div>
         </div>
         <div className="text-right">
-          <div className="text-[22px] font-extrabold text-[#1E5CFF]">
-            ₹{library.base_price}<span className="text-[13px] font-medium text-[#6E7F94]"> /hr</span>
-          </div>
+          {price ? (
+            <div className="text-[22px] font-extrabold text-[#1E5CFF]">
+              <span className="text-[12px] font-semibold text-[#9AACBE] mr-1">{price.label}</span>
+              ₹{price.rate}<span className="text-[13px] font-medium text-[#6E7F94]"> /hr</span>
+            </div>
+          ) : (
+            <div className="text-[13px] font-semibold text-[#9AACBE]">No slots configured</div>
+          )}
           <div className={['text-[12px] font-semibold mt-1', freeSeats > 0 && isOpen ? 'text-[#12A87A]' : 'text-[#9AACBE]'].join(' ')}>
             {isOpen ? (freeSeats > 0 ? `● ${freeSeats} seats free` : 'Library Full') : 'Check back later'}
           </div>
@@ -134,7 +176,10 @@ export default function LibraryDetail({
         </div>
       )}
 
-      {/* Owner-defined time slots (if set up) */}
+      {/* Owner-defined time slots — SLOT-ONLY ARCHITECTURE: this list IS the
+          library's operating hours AND its pricing. There is no "custom
+          duration at base_price" option anymore — every booking must fit
+          inside one of these slots. */}
       {slotOptions.length > 0 && (
         <div className="bg-white border border-[#E4EAF2] rounded-xl p-4 mb-5">
           <div className="flex items-center gap-1.5 text-[13px] font-bold text-[#0D1117] mb-3">
@@ -144,7 +189,7 @@ export default function LibraryDetail({
             {slotOptions.map((slot) => (
               <div key={slot.id}
                 className="flex items-center justify-between p-3 rounded-[10px] bg-[#F4F7FB] border border-[#E4EAF2] cursor-pointer hover:border-[#1E5CFF] hover:bg-[#E8EFFE] transition-all group"
-                onClick={() => router.push(`/student/book/${library.id}/seat`)}
+                onClick={() => router.push(`/student/book/${library.id}/seat?slot=${slot.id}`)}
               >
                 <div>
                   <div className="text-[13px] font-semibold text-[#0D1117]">{slot.label}</div>
@@ -162,7 +207,7 @@ export default function LibraryDetail({
               </div>
             ))}
           </div>
-          <div className="text-[11px] text-[#9AACBE] mt-3">Or book any custom duration at ₹{library.base_price}/hr</div>
+          <div className="text-[11px] text-[#9AACBE] mt-3">Bookings must fit within one of the slots above</div>
         </div>
       )}
 
@@ -203,7 +248,7 @@ export default function LibraryDetail({
       <div className="grid grid-cols-3 gap-3 mb-6">
         {[
           { icon: Users,    label: 'Free Seats', value: isOpen ? `${freeSeats}` : '—'       },
-          { icon: Calendar, label: 'Open Days',  value: 'Mon–Sun'                            },
+          { icon: Calendar, label: 'Today',      value: status.todayHoursLabel               },
           { icon: Star,     label: 'Rating',     value: `${library.rating.toFixed(1)}/5`    },
         ].map(({ icon: Icon, label, value }) => (
           <div key={label} className="bg-white border border-[#E4EAF2] rounded-xl p-3 text-center">
@@ -221,8 +266,10 @@ export default function LibraryDetail({
             <div className="text-[13px] font-bold text-[#0D1117] truncate">{library.name}</div>
             <div className="text-[11px] text-[#6E7F94]">
               {isOpen
-                ? freeSeats > 0 ? `${freeSeats} seats · from ₹${library.base_price}/hr` : 'No seats available right now'
-                : `Opens ${openHours.split('–')[0]?.trim()}`}
+                ? freeSeats > 0
+                  ? `${freeSeats} seats${price ? ` · from ₹${price.rate}/hr` : ''}`
+                  : 'No seats available right now'
+                : `Closed — ${status.todayHoursLabel}`}
             </div>
           </div>
           <button

@@ -3,11 +3,18 @@
  * Server-component wrapper around LibraryDetail.
  *
  * The library-detail page (app/(student)/library/[id]/page.tsx) fetches
- * `library`, `books`, and `profile` and passes them here. This component
- * fetches the two pieces of data that depend on the library id and the
- * signed-in user — active slot configs and the user's active subscription
- * for this library — then renders the 'use client' LibraryDetail with the
- * exact shape it expects.
+ * `library`, `books`, and `profile` and passes them here.
+ *
+ * SLOT-ONLY ARCHITECTURE: `library` (a LibraryCard from getLibraryDetail)
+ * already includes `slots` (all slot_configs for this library, active +
+ * inactive) and `status` (open/closed + today's hours, derived from those
+ * slots via lib/booking/libraryStatus.ts) — both computed once in
+ * getLibraryDetail/buildCard, so this wrapper just passes them through. No
+ * separate fetch is needed for slots or open/closed status.
+ *
+ * This component fetches the one piece of data that depends on the
+ * signed-in user — the active subscription for this library — then renders
+ * the 'use client' LibraryDetail with the exact shape it expects.
  *
  * NOTE: `books` and `profile` are accepted for forward-compatibility with
  * the page contract but are not rendered by the current LibraryDetail
@@ -18,14 +25,11 @@
 
 import LibraryDetail from './LibraryDetail'
 import {
-  getLibrarySlots,
   getActiveSubscriptionForLibrary,
   type LibraryCard,
   type LibraryBook,
   type StudentProfile,
 } from '@/lib/actions/student'
-import {isOpenNowIST} from '@/lib/utils/student'
-import { formatTime12h } from '@/lib/booking/types'
 
 export default async function LibraryDetailClient({
   library,
@@ -36,13 +40,7 @@ export default async function LibraryDetailClient({
   books:   LibraryBook[]
   profile: StudentProfile | null
 }) {
-  const [ownerSlots, activeSub] = await Promise.all([
-    getLibrarySlots(library.id),
-    getActiveSubscriptionForLibrary(library.id),
-  ])
-
-  const isOpen    = isOpenNowIST(library.open_time, library.close_time)
-  const openHours = `${formatTime12h(library.open_time.slice(0, 5))} – ${formatTime12h(library.close_time.slice(0, 5))}`
+  const activeSub = await getActiveSubscriptionForLibrary(library.id)
 
   return (
     <LibraryDetail
@@ -55,15 +53,13 @@ export default async function LibraryDetailClient({
         address:       library.address,
         rating:        library.rating,
         total_reviews: library.total_reviews,
-        base_price:    library.base_price,
         amenities:     library.amenities,
         images:        library.image_urls,
       }}
-      ownerSlots={ownerSlots}
+      ownerSlots={library.slots}
       plans={library.plans}
       freeSeats={library.available_seats}
-      isOpen={isOpen}
-      openHours={openHours}
+      status={library.status}
       activeSub={activeSub}
     />
   )

@@ -29,11 +29,11 @@ import {
   validateISTRange,
   inputToDB,
 } from '@/lib/ist'
-import { fetchActiveSlotConfigs } from '@/lib/booking/slotConfigService'
-import { calculateBookingAmount } from '@/lib/booking/pricing'
-import { validateBookingWindow }  from '@/lib/booking/bookingValidation'
-import type { SlotConfig }        from '@/lib/booking/types'
-import {isOpenNowIST} from '@/lib/utils/student'
+import { fetchActiveSlotConfigs, fetchSlotConfigs } from '@/lib/booking/slotConfigService'
+import { calculateBookingAmount }   from '@/lib/booking/pricing'
+import { validateBooking } from '@/lib/booking/slotBoundaryValidation'
+import { resolveLibraryStatus, type LibraryStatus } from '@/lib/booking/libraryStatus'
+import type { SlotConfig }          from '@/lib/booking/types'
 // Static import — avoids TypeScript losing track of exported types
 // when called via dynamic `await import()` inside server action functions.
 import {
@@ -72,9 +72,6 @@ export type LibraryCard = {
   longitude:       number | null
   rating:          number
   total_reviews:   number
-  base_price:      number
-  open_time:       string   // "HH:MM:SS" from Postgres time column
-  close_time:      string
   is_active:       boolean
   cover_url:       string | null
   image_urls:      string[]
@@ -83,6 +80,13 @@ export type LibraryCard = {
   available_seats: number
   plans:           LibraryPlan[]
   distance_km:     number | null
+  /** All slot configs (active + inactive) — slot-only architecture: this
+   *  replaces base_price/open_time/close_time as the source of pricing AND
+   *  operating hours. */
+  slots:           SlotConfig[]
+  /** Derived from `slots` via lib/booking/libraryStatus.ts — single source
+   *  of truth for open/closed badges everywhere. */
+  status:          LibraryStatus
 }
 
 export type StudentBooking = {
@@ -197,12 +201,11 @@ function haversineKm(
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
-
-
 function buildCard(
   lib:          Record<string, any>,
   bookedIds:    Set<string>,
   plansByLib:   Record<string, LibraryPlan[]>,
+  slotsByLib:   Record<string, SlotConfig[]>,
   userLat:      number | null,
   userLng:      number | null,
 ): LibraryCard {
@@ -222,6 +225,8 @@ function buildCard(
       ? parseFloat(haversineKm(userLat, userLng, libLat, libLng).toFixed(1))
       : null
 
+  const slots = slotsByLib[lib.id] ?? []
+
   return {
     id:              lib.id,
     name:            lib.name     ?? '',
@@ -233,9 +238,6 @@ function buildCard(
     longitude:       libLng,
     rating:          Number(lib.rating        ?? 0),
     total_reviews:   Number(lib.total_reviews ?? 0),
-    base_price:      Number(lib.base_price    ?? 0),
-    open_time:       lib.open_time  ?? '06:00:00',
-    close_time:      lib.close_time ?? '22:00:00',
     is_active:       lib.is_active  ?? false,
     cover_url:       cover,
     image_urls:      images.map((i) => i.image_url),
@@ -244,6 +246,8 @@ function buildCard(
     available_seats: available,
     plans:           plansByLib[lib.id] ?? [],
     distance_km:     distanceKm,
+    slots,
+    status:          resolveLibraryStatus(slots),
   }
 }
 
@@ -295,7 +299,7 @@ export async function exploreLibraries(filters: ExploreFilters = {}): Promise<{
     .from('libraries')
     .select(
       `id, name, city, area, address, latitude, longitude,
-       rating, total_reviews, base_price, open_time, close_time, is_active,
+       rating, total_reviews, is_active,
        library_images(image_url, is_cover),
        library_amenities(amenities(name)),
        seats(id, is_active)`,
@@ -403,10 +407,34 @@ export async function exploreLibraries(filters: ExploreFilters = {}): Promise<{
     })
   }
 
+  // Slot-only architecture: fetch all slot configs for every library in this
+  // result set in one query, so buildCard can derive pricing AND open/closed
+  // status from slot_configs (lib/booking/libraryStatus.ts) — no more
+  // base_price/open_time/close_time on the libraries row.
+  const { data: slotsData } = await supabase
+    .from('slot_configs')
+    .select('id, library_id, start_time, end_time, days, price, discount, is_active')
+    .in('library_id', libIds)
+
+  const slotsByLib: Record<string, SlotConfig[]> = {}
+  for (const row of (slotsData ?? []) as any[]) {
+    if (!slotsByLib[row.library_id]) slotsByLib[row.library_id] = []
+    slotsByLib[row.library_id].push({
+      id:         row.id,
+      library_id: row.library_id,
+      start:      String(row.start_time).slice(0, 5),
+      end:        String(row.end_time).slice(0, 5),
+      days:       row.days ?? [],
+      price:      Number(row.price ?? 0),
+      discount:   Number(row.discount ?? 0),
+      is_active:  row.is_active,
+    })
+  }
+
   let cards = allRows
-    .map((lib) => buildCard(lib, bookedByLib[lib.id] ?? new Set(), plansByLib, lat ?? null, lng ?? null))
+    .map((lib) => buildCard(lib, bookedByLib[lib.id] ?? new Set(), plansByLib, slotsByLib, lat ?? null, lng ?? null))
     .filter((card) => {
-      if (open_now && !isOpenNowIST(card.open_time, card.close_time)) return false
+      if (open_now && !card.status.isOpen) return false
       if (amenities.length > 0 && !amenities.every((a) => card.amenities.includes(a))) return false
       return true
     })
@@ -442,7 +470,7 @@ export async function getLibraryDetail(
     .from('libraries')
     .select(
       `id, name, city, area, address, description, latitude, longitude,
-       rating, total_reviews, base_price, open_time, close_time, is_active,
+       rating, total_reviews, is_active,
        library_images(image_url, is_cover),
        library_amenities(amenities(name)),
        seats(id, is_active)`,
@@ -481,10 +509,13 @@ export async function getLibraryDetail(
       scope:         p.scope         ?? 'library',
     }))
 
+  const slots = await fetchSlotConfigs(supabase, libraryId)
+
   return buildCard(
     lib as any,
     bookedIds,
     { [libraryId]: plans },
+    { [libraryId]: slots },
     userLat ?? null,
     userLng ?? null,
   )
@@ -507,9 +538,14 @@ export async function getLibrarySlots(libraryId: string): Promise<SlotConfig[]> 
 /**
  * Price preview for the booking UI — called as the student picks a date/time,
  * before initiateBooking is invoked. Uses the EXACT same resolution
- * (lib/booking/pricing.ts) as initiateBooking, owner.manualBookSeat, and
- * staff.seniorManualBook, so the number shown here always matches what gets
- * charged.
+ * (lib/booking/pricing.ts + slotBoundaryValidation.ts) as initiateBooking,
+ * owner.manualBookSeat, and staff.seniorManualBook, so the number shown here
+ * always matches what gets charged.
+ *
+ * SLOT-ONLY ARCHITECTURE: if the selected [start, end) doesn't fit entirely
+ * inside one active slot, this returns an error (the booking UI should
+ * disable seat selection / payment until a valid range is chosen) — there
+ * is no base_price fallback to fall back to.
  *
  * `startTime`/`endTime` are datetime-local input values ("YYYY-MM-DDTHH:mm").
  */
@@ -517,7 +553,7 @@ export async function getBookingPricePreview(
   libraryId: string,
   startTime: string,
   endTime:   string,
-): Promise<ActionResult<{ amount: number; hourlyRate: number; priceSource: 'slot' | 'base_price' }>> {
+): Promise<ActionResult<{ amount: number; hourlyRate: number; slot: SlotConfig }>> {
   const start = inputToDB(startTime)
   const end   = inputToDB(endTime)
 
@@ -527,7 +563,7 @@ export async function getBookingPricePreview(
   const supabase = await createServerSupabaseClient()
   const { data: lib, error } = await supabase
     .from('libraries')
-    .select('base_price, is_active')
+    .select('id, is_active')
     .eq('id', libraryId)
     .eq('is_active', true)
     .maybeSingle()
@@ -535,9 +571,13 @@ export async function getBookingPricePreview(
   if (error || !lib) return { success: false, error: 'Library not found or inactive' }
 
   const slots = await fetchActiveSlotConfigs(supabase, libraryId)
-  const { amount, hourlyRate, source } = calculateBookingAmount(slots, start, end, Number(lib.base_price ?? 0))
 
-  return { success: true, data: { amount, hourlyRate, priceSource: source } }
+  const windowCheck = validateBooking({ slots, startTime: start, endTime: end, graceMinutes: 5 })
+  if (windowCheck.ok === false) return { success: false, error: windowCheck.error }
+
+  const { amount, hourlyRate, matchedSlot } = calculateBookingAmount(slots, start, end)
+
+  return { success: true, data: { amount, hourlyRate, slot: matchedSlot } }
 }
 
 /**
@@ -546,6 +586,23 @@ export async function getBookingPricePreview(
  * A subscription is "for this library" if its plan is library-scoped to
  * this library, OR the plan has no library_libraries rows (i.e. a
  * city/global-scope plan) and is the user's active plan.
+ *
+ * Returns null if the user is signed out or has no active subscription
+ * covering this library.
+ */
+/**
+ * Returns the current student's active subscription for this library, if any
+ * — used to show the "Active membership" badge on the library detail page.
+ *
+ * plan_scope is either:
+ *   'library' — the plan applies to exactly one library
+ *   'cross'   — the plan applies to a set of libraries (e.g. a multi-branch
+ *               pass) — still scoped via plan_libraries, just potentially
+ *               with multiple rows.
+ *
+ * Either way, a plan applies to `libraryId` iff plan_libraries has a
+ * matching (plan_id, library_id) row — there is no "applies to everything"
+ * scope value, so we always check the junction table.
  *
  * Returns null if the user is signed out or has no active subscription
  * covering this library.
@@ -570,16 +627,14 @@ export async function getActiveSubscriptionForLibrary(
     const plan = sub.plans
     if (!plan) continue
 
-    if (plan.scope === 'library') {
-      const { data: planLib } = await supabase
-        .from('plan_libraries')
-        .select('library_id')
-        .eq('plan_id', plan.id)
-        .eq('library_id', libraryId)
-        .maybeSingle()
-      if (!planLib) continue
-    }
-    // 'city' / 'global' scope plans apply to every library — no further check
+    const { data: planLib } = await supabase
+      .from('plan_libraries')
+      .select('library_id')
+      .eq('plan_id', plan.id)
+      .eq('library_id', libraryId)
+      .maybeSingle()
+
+    if (!planLib) continue
 
     return { planName: plan.name ?? '', endDate: sub.end_date }
   }
@@ -651,7 +706,6 @@ export async function initiateBooking(
   razorpayKeyId:   string
   libraryName:     string
   hourlyRate:      number
-  priceSource:     'slot' | 'base_price'
 }>> {
   const parsed = initiateBookingSchema.safeParse(input)
   if (!parsed.success)
@@ -672,7 +726,7 @@ export async function initiateBooking(
   // (the column exists after migration but Supabase's generated types may lag)
   const { data: libRaw, error: libErr } = await supabase
     .from('libraries')
-    .select('id, name, base_price, is_active, open_time, close_time')
+    .select('id, name, is_active')
     .eq('id', libraryId)
     .eq('is_active', true)
     .maybeSingle()
@@ -680,15 +734,12 @@ export async function initiateBooking(
   if (libErr || !libRaw)
     return { success: false, error: 'Library not found or inactive' }
 
-  // Operating-hours + past-time validation — same rules applied to
-  // owner.manualBookSeat and staff.seniorManualBook.
-  const windowCheck = validateBookingWindow({
-    startTime:    start,
-    endTime:      end,
-    openTime:     libRaw.open_time  ?? '00:00:00',
-    closeTime:    libRaw.close_time ?? '23:59:59',
-    graceMinutes: 5,
-  })
+  // SLOT-ONLY ARCHITECTURE: the booking must fit entirely inside one active
+  // slot. This single check replaces the old operating-hours check AND
+  // implicitly determines pricing (the containing slot IS the price source —
+  // see lib/booking/pricing.ts). No base_price fallback.
+  const slots = await fetchActiveSlotConfigs(supabase, libraryId)
+  const windowCheck = validateBooking({ slots, startTime: start, endTime: end, graceMinutes: 5 })
   if (windowCheck.ok === false) return { success: false, error: windowCheck.error }
 
   // Fetch razorpay_account_id separately with cast (avoids generated-type error)
@@ -701,10 +752,7 @@ export async function initiateBooking(
   const lib = {
     id:                  libRaw.id,
     name:                libRaw.name,
-    base_price:          libRaw.base_price,
     is_active:           libRaw.is_active,
-    open_time:           libRaw.open_time,
-    close_time:          libRaw.close_time,
     razorpay_account_id: libExtra?.razorpay_account_id ?? null,
   }
 
@@ -766,9 +814,9 @@ export async function initiateBooking(
 
   // Calculate amount — single source of truth shared with preview UI,
   // owner/staff manual bookings, and confirmation (lib/booking/pricing.ts).
-  // Uses the slot whose range contains `start`, falling back to base_price.
-  const slots = await fetchActiveSlotConfigs(supabase, libraryId)
-  const priceResolution = calculateBookingAmount(slots, start, end, Number(lib.base_price ?? 0))
+  // The slot was already confirmed to contain `start` by validateBooking
+  // above, so calculateBookingAmount cannot throw NoMatchingSlotError here.
+  const priceResolution = calculateBookingAmount(slots, start, end)
   const amountINR = priceResolution.amount
   if (amountINR <= 0)
     return { success: false, error: 'Invalid booking amount. Please contact the library.' }
@@ -837,7 +885,6 @@ export async function initiateBooking(
       razorpayKeyId:   keyId,
       libraryName:     lib.name ?? '',
       hourlyRate:      priceResolution.hourlyRate,
-      priceSource:     priceResolution.source,
     },
   }
 }

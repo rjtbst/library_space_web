@@ -19,7 +19,8 @@
  *
  * PRICE / DISCOUNT CONVENTION
  * ───────────────────────────
- * `price`    — ₹ per hour for this slot (same unit as libraries.base_price)
+ * `price`    — ₹ per hour for this slot (the per-slot rate; there is no
+ *              library-wide base_price anymore — see lib/booking/pricing.ts)
  * `discount` — flat ₹ reduction applied to `price` to get the effective
  *              hourly rate for this slot: effectiveRate = max(0, price - discount)
  *

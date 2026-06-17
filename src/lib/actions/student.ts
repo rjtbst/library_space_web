@@ -1585,3 +1585,173 @@ export async function expireStaleHolds(): Promise<{ cancelled: number }> {
   if (error) console.error('[expireStaleHolds]', error.message)
   return { cancelled: data?.length ?? 0 }
 }
+
+// PASTE THIS INTO src/lib/actions/student.ts
+// Add after the cancelBooking function (~line 968)
+
+/* ══════════════════════════════════════════════════════════════════════════
+   EXTEND BOOKING (student self-service)
+   ─────────────────────────────────────────────────────────────────────────
+   A student who is checked-in can extend their booking end time, provided:
+     - The new end time is still within the same slot boundary
+     - No other booking already occupies that seat in the extended window
+     - Payment for the extra time is collected (Razorpay)
+   This creates a NEW payment charge for the extension delta. The original
+   booking row's end_time is updated after payment is confirmed.
+══════════════════════════════════════════════════════════════════════════ */
+
+export async function initiateBookingExtension(input: {
+  bookingId:  string
+  newEndTime: string   // "YYYY-MM-DDTHH:mm" — datetime-local value
+}): Promise<ActionResult<{
+  bookingId:       string
+  extensionAmount: number
+  razorpayOrderId: string
+  razorpayKeyId:   string
+  libraryName:     string
+}>> {
+  const { supabase, user } = await getSupabaseUser()
+  if (!user) return { success: false, error: 'Please sign in to extend your booking' }
+
+  const newEnd = inputToDB(input.newEndTime)
+
+  // Load booking — must belong to this user and be checked_in or confirmed
+  const { data: booking } = await supabase
+    .from('bookings')
+    .select('id, user_id, library_id, seat_id, start_time, end_time, status')
+    .eq('id', input.bookingId)
+    .eq('user_id', user.id)
+    .maybeSingle()
+
+  if (!booking) return { success: false, error: 'Booking not found' }
+  if (!['confirmed', 'checked_in'].includes(booking.status as string))
+    return { success: false, error: 'Only confirmed or checked-in bookings can be extended' }
+
+  const currentEndMs = new Date((booking.end_time as string) + '+05:30').getTime()
+  const newEndMs     = new Date(newEnd + '+05:30').getTime()
+
+  if (isNaN(newEndMs))          return { success: false, error: 'Invalid end time' }
+  if (newEndMs <= currentEndMs) return { success: false, error: 'New end time must be after current end time' }
+  if (newEndMs - new Date((booking.start_time as string) + '+05:30').getTime() > 24 * 3_600_000)
+    return { success: false, error: 'Total booking duration cannot exceed 24 hours' }
+
+  // Slot-boundary check: extended window must still fit in the same slot
+  const slots = await fetchActiveSlotConfigs(supabase, booking.library_id as string)
+  const windowCheck = validateBooking({
+    slots,
+    startTime: booking.start_time as string,
+    endTime:   newEnd,
+  })
+  if (windowCheck.ok === false) return { success: false, error: windowCheck.error }
+
+  // Seat overlap check for the extension window only
+  const { data: overlap } = await supabase
+    .from('bookings')
+    .select('id')
+    .eq('seat_id', booking.seat_id)
+    .neq('id', booking.id)
+    .in('status', ['confirmed', 'checked_in', 'held'] as never[])
+    .lt('start_time', newEnd)
+    .gt('end_time', booking.end_time)
+
+  if (overlap && overlap.length > 0)
+    return { success: false, error: 'Seat already booked in this extended time window' }
+
+  // Calculate extension amount (same pricing engine — prorate from current end to new end)
+  const extensionSlots = await fetchActiveSlotConfigs(supabase, booking.library_id as string)
+  let extensionAmount: number
+  try {
+    const resolution = calculateBookingAmount(extensionSlots, booking.end_time as string, newEnd)
+    extensionAmount = resolution.amount
+  } catch {
+    return { success: false, error: 'No active slot covers the extension period. Please book a new session.' }
+  }
+
+  if (extensionAmount <= 0)
+    return { success: false, error: 'Extension period is too short to charge' }
+
+  // Get library name + razorpay account
+  const { data: lib } = await (supabase as any)
+    .from('libraries')
+    .select('name, razorpay_account_id')
+    .eq('id', booking.library_id)
+    .maybeSingle()
+
+  const orderResult = await createRazorpayOrder({
+    amountINR:         extensionAmount,
+    razorpayAccountId: (lib as any)?.razorpay_account_id ?? null,
+    currency:          'INR',
+    notes: {
+      booking_id:   booking.id,
+      extension_to: newEnd,
+      type:         'booking_extension',
+    },
+  })
+
+  if (orderResult.success === false) return { success: false, error: orderResult.error }
+  const { orderId, keyId } = orderResult.data
+
+  // Store a pending payment tagged with the booking_id + extension end time
+  // (we store the extension target in notes; on confirm we update end_time)
+  await (supabase as any).from('payments').insert({
+    user_id:           user.id,
+    booking_id:        booking.id,
+    amount:            extensionAmount,
+    status:            'pending',
+    razorpay_order_id: orderId,
+  })
+
+  return {
+    success: true,
+    data: {
+      bookingId:       booking.id,
+      extensionAmount,
+      razorpayOrderId: orderId,
+      razorpayKeyId:   keyId,
+      libraryName:     (lib as any)?.name ?? '',
+    },
+  }
+}
+
+export async function confirmBookingExtension(input: {
+  bookingId:         string
+  newEndTime:        string
+  razorpayOrderId:   string
+  razorpayPaymentId: string
+  razorpaySignature: string
+}): Promise<ActionResult<{ bookingId: string; newEndTime: string }>> {
+  const { supabase, user } = await getSupabaseUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  if (!verifyRazorpaySignature(input.razorpayOrderId, input.razorpayPaymentId, input.razorpaySignature))
+    return { success: false, error: 'Payment verification failed. Contact support if amount was deducted.' }
+
+  const newEnd = inputToDB(input.newEndTime)
+
+  const { data: booking } = await supabase
+    .from('bookings')
+    .select('id, user_id, status')
+    .eq('id', input.bookingId)
+    .eq('user_id', user.id)
+    .maybeSingle()
+
+  if (!booking) return { success: false, error: 'Booking not found' }
+
+  // Update payment + extend booking in parallel
+  const [bRes] = await Promise.all([
+    supabase
+      .from('bookings')
+      .update({ end_time: newEnd } as never)
+      .eq('id', input.bookingId),
+    (supabase as any)
+      .from('payments')
+      .update({ status: 'paid', razorpay_payment_id: input.razorpayPaymentId })
+      .eq('razorpay_order_id', input.razorpayOrderId)
+      .eq('status', 'pending'),
+  ])
+
+  if (bRes.error) return { success: false, error: bRes.error.message }
+
+  revalidatePath('/bookings')
+  return { success: true, data: { bookingId: input.bookingId, newEndTime: newEnd } }
+}

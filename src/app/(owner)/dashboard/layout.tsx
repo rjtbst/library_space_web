@@ -19,7 +19,7 @@ export default async function OwnerDashboardLayout({ children }: { children: Rea
     .eq('id', user.id)
     .maybeSingle()
 
-  if (profile?.role !== 'owner') redirect('/student/home')
+  if (profile?.role !== 'owner') redirect('/student/explore')
 
   // Fetch both in parallel — was sequential before
   const [firstLibraryId, libraries] = await Promise.all([

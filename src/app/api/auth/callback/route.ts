@@ -4,7 +4,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 
 function safeNext(next: string, origin: string): string {
-  if (!next.startsWith('/')) return `${origin}/student/home`
+  if (!next.startsWith('/')) return `${origin}/student/explore`
   return `${origin}${next}`
 }
 

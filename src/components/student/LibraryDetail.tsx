@@ -189,7 +189,7 @@ export default function LibraryDetail({
             {slotOptions.map((slot) => (
               <div key={slot.id}
                 className="flex items-center justify-between p-3 rounded-[10px] bg-[#F4F7FB] border border-[#E4EAF2] cursor-pointer hover:border-[#1E5CFF] hover:bg-[#E8EFFE] transition-all group"
-                onClick={() => router.push(`/student/book/${library.id}/seat?slot=${slot.id}`)}
+                onClick={() => router.push(`/library/${library.id}/book/seat?slot=${slot.id}`)}
               >
                 <div>
                   <div className="text-[13px] font-semibold text-[#0D1117]">{slot.label}</div>
@@ -274,7 +274,7 @@ export default function LibraryDetail({
           </div>
           <button
             disabled={!isOpen || freeSeats === 0}
-            onClick={() => router.push(`/student/book/${library.id}/seat`)}
+            onClick={() => router.push(`/library/${library.id}/book/seat`)}
             className="flex-shrink-0 px-6 py-3 rounded-xl text-[14px] font-bold bg-[#1E5CFF] text-white shadow-[0_4px_24px_rgba(30,92,255,.3)] hover:bg-[#1447D4] hover:-translate-y-px transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
           >
             {!isOpen ? 'Closed' : freeSeats === 0 ? 'Full' : 'Book Seat →'}

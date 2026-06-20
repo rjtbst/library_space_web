@@ -1,6 +1,6 @@
-import { redirect } from 'next/navigation'
+// src/app/(owner)/dashboard/layout.tsx
 import { Suspense } from 'react'
-import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { requireRole } from '@/lib/auth/guards'
 import { getFirstLibraryId, getOwnerLibraries } from '@/lib/actions/owner'
 import { OwnerProvider } from '@/contexts/OwnerContext'
 import OwnerSidebar from '@/components/owner/OwnerSidebar'
@@ -9,19 +9,9 @@ import { NavProgressBar } from '@/components/owner/NavProgressBar'
 export const metadata = { title: 'Owner Dashboard — LibrarySpace' }
 
 export default async function OwnerDashboardLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createServerSupabaseClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/auth/login')
+  const { profile } = await requireRole('owner')
 
-  const { data: profile } = await supabase
-    .from('users')
-    .select('role, full_name')
-    .eq('id', user.id)
-    .maybeSingle()
-
-  if (profile?.role !== 'owner') redirect('/student/explore')
-
-  // Fetch both in parallel — was sequential before
+  // Fetch both in parallel
   const [firstLibraryId, libraries] = await Promise.all([
     getFirstLibraryId(),
     getOwnerLibraries(),
@@ -29,7 +19,7 @@ export default async function OwnerDashboardLayout({ children }: { children: Rea
 
   return (
     <OwnerProvider
-      ownerName={profile?.full_name ?? 'Owner'}
+      ownerName={profile.full_name ?? 'Owner'}
       firstLibraryId={firstLibraryId}
       libraries={libraries}
     >

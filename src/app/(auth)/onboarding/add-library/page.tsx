@@ -3,6 +3,7 @@ import { Suspense } from 'react'
 import { getLibraryForEdit } from '@/lib/actions/library'
 import { getProfile } from '@/lib/actions/auth'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { requireRole } from '@/lib/auth/guards'
 import AddLibraryForm from '@/components/owner/AddLibraryForm'
 import type { AmenityOption } from '@/components/owner/AddLibraryForm'
 
@@ -13,6 +14,8 @@ interface Props {
 }
 
 export default async function AddLibraryPage({ searchParams }: Props) {
+  await requireRole('owner')
+
   const { id } = await searchParams
   const libraryId = id ?? null
 

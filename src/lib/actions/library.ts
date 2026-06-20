@@ -1,6 +1,7 @@
 'use server'
 
 import { createServerSupabaseClient } from '@/lib/supabase/server'
+import { requireActionRole } from '@/lib/auth/guards'
 import { z } from 'zod'
 import type { ActionResult } from '@/lib/actions/auth'
 
@@ -105,9 +106,9 @@ export async function createLibrary(
     return { success: false, error: parsed.error.errors[0].message }
   }
 
-  const supabase = await createServerSupabaseClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: 'Not authenticated' }
+  const gate = await requireActionRole('owner')
+  if (!gate.ok) return gate.error
+  const { supabase, user } = gate
 
   const {
     name, state, city, area, address,
@@ -163,6 +164,10 @@ export async function updateLibrary(
   const supabase = await createServerSupabaseClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: 'Not authenticated' }
+
+  const { data: existing } = await supabase
+    .from('libraries').select('id').eq('id', libraryId).eq('owner_id', user.id).maybeSingle()
+  if (!existing) return { success: false, error: 'Library not found or access denied' }
 
   const {
     name, state, city, area, address,
@@ -318,6 +323,10 @@ export async function getLibraryPhotos(libraryId: string): Promise<LibraryPhotoR
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return []
 
+  const { data: lib } = await supabase
+    .from('libraries').select('id').eq('id', libraryId).eq('owner_id', user.id).maybeSingle()
+  if (!lib) return []
+
   const { data } = await supabase
     .from('library_images')
     .select('id, image_url, is_cover')
@@ -444,6 +453,10 @@ export async function publishLibrary(libraryId: string): Promise<ActionResult> {
   const supabase = await createServerSupabaseClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: 'Not authenticated' }
+
+  const { data: lib } = await supabase
+    .from('libraries').select('id').eq('id', libraryId).eq('owner_id', user.id).maybeSingle()
+  if (!lib) return { success: false, error: 'Library not found or access denied' }
 
   const { count: photoCount } = await supabase
     .from('library_images').select('*', { count: 'exact', head: true }).eq('library_id', libraryId)

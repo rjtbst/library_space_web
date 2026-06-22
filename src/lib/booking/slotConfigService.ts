@@ -18,6 +18,8 @@
 import { logError } from '../logger'
 import { type SlotConfig, type SlotConfigInput } from './types'
 import { validateSlot, findSlotConflict } from './slotValidation'
+import { unstable_cache, revalidateTag } from 'next/cache'
+import { createCacheSupabaseClient } from '../supabase/cache-clients'
 
 type ServiceResult<T> =
   | { success: true; data: T }
@@ -82,6 +84,54 @@ export async function fetchActiveSlotConfigs(
 ): Promise<SlotConfig[]> {
   const all = await fetchSlotConfigs(supabase, libraryId)
   return all.filter(s => s.is_active)
+}
+
+/* ─── Cached read (for high-frequency, read-only call sites) ───────────────
+ *
+ * slot_configs changes a handful of times a year per library (an owner
+ * editing their hours/pricing), but is read on nearly every booking-flow
+ * request: every exploreLibraries() result row, every getLibraryDetail(),
+ * every initiateBooking(), every price preview keystroke. Fetching it fresh
+ * from Postgres every time is the single most repeated "hot but rarely
+ * changing" query in the app.
+ *
+ * This wraps the SAME data (active slots only, public-readable) in
+ * Next.js's built-in data cache, tagged per library. Cache lifetime is
+ * capped at 5 minutes as a safety net even if a revalidateTag() call is
+ * ever missed; in practice every write path below calls
+ * revalidateSlotConfigsCache() immediately after a successful write, so
+ * staleness in normal operation should be ~0, not 5 minutes.
+ *
+ * IMPORTANT: this uses createCacheSupabaseClient() (anon key, no cookies)
+ * rather than a request-scoped client — see cache-client.ts for why. Only
+ * call this for read paths that don't need the caller's session; the
+ * underlying RLS policy (slot_configs_public_read_active) already permits
+ * anonymous reads of active slots for active libraries, so this returns
+ * exactly the same rows a logged-out visitor could already see directly.
+ *
+ * Cache key and tag both include libraryId so a write to one library's
+ * slots never invalidates or collides with any other library's cache.
+ */
+export async function fetchActiveSlotConfigsCached(libraryId: string): Promise<SlotConfig[]> {
+  const cached = unstable_cache(
+    async (libId: string): Promise<SlotConfig[]> => {
+      const supabase = createCacheSupabaseClient()
+      return fetchActiveSlotConfigs(supabase, libId)
+    },
+    [`active-slot-configs-${libraryId}`],
+    { revalidate: 300, tags: [`slot-configs-${libraryId}`] },
+  )
+  return cached(libraryId)
+}
+
+/**
+ * Call this after any successful write to a library's slot_configs
+ * (upsert, toggle, delete) so the cached read above doesn't serve stale
+ * data until the 5-minute safety-net expiry. Safe to call even if nothing
+ * is currently cached for this library — revalidateTag on a miss is a no-op.
+ */
+export function revalidateSlotConfigsCache(libraryId: string): void {
+  revalidateTag(`slot-configs-${libraryId}`)
 }
 
 /**
@@ -203,7 +253,16 @@ export async function toggleSlotConfig(
   return { success: true, data: rowToSlot(data) }
 }
 
-/** Permanently remove a slot config (not currently exposed in the UI, but available for future use). */
+/**
+ * Permanently remove a slot config (not currently exposed in the UI, but
+ * available for future use).
+ *
+ * NOTE: if you wire this up to an action, call
+ * revalidateSlotConfigsCache(libraryId) after a successful delete, the same
+ * way upsertSlotConfig/toggleSlotConfig's callers in owner.ts do — otherwise
+ * the cached read path (fetchActiveSlotConfigsCached) will keep serving the
+ * deleted slot for up to 5 minutes.
+ */
 export async function deleteSlotConfig(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase:  any,

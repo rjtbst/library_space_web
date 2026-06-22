@@ -1,3 +1,4 @@
+// src/lib/actions/staff.ts
 'use server'
 
 import { revalidatePath } from 'next/cache'
@@ -514,6 +515,14 @@ export async function staffWalkIn(input: StaffWalkInInput): Promise<ActionResult
     .select('id').single()
 
   if (bookErr || !booking) {
+    // PostgreSQL error 23P01 = exclusion_violation, raised by the
+    // no_overlapping_bookings EXCLUDE constraint — the hard backstop against
+    // double-booking. Can fire if this walk-in races against an online
+    // booking or another staff terminal for the same seat/time.
+    if ((bookErr as any)?.code === '23P01') {
+      logError('staffWalkIn', `Exclusion violation — seat ${seatId} booked concurrently`, bookErr)
+      return { success: false, error: 'This seat was just booked by someone else. Please refresh and choose another seat.' }
+    }
     logError('staffWalkIn', 'Insert failed', bookErr)
     return { success: false, error: bookErr?.message ?? 'Failed to create booking' }
   }

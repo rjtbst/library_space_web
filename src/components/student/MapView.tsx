@@ -16,6 +16,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type { LibraryCard } from '@/lib/actions/student'
+import { effectiveSlotRate } from '@/lib/booking/types'
 import { Navigation2, MapPin, ExternalLink, Loader2, AlertCircle, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import Link from 'next/link'
@@ -37,19 +38,25 @@ interface Props {
 
 const MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY ?? ''
 
-function fmtTime(raw: string): string {
-  const [h, m] = raw.split(':').map(Number)
-  const ampm = h >= 12 ? 'PM' : 'AM'
-  return `${h % 12 === 0 ? 12 : h % 12}:${String(m ?? 0).padStart(2, '0')} ${ampm}`
-}
+/**
+ * SLOT-ONLY ARCHITECTURE — same pricing/status logic as LibraryCard.tsx's
+ * priceDisplay(). There is no single library price or open/close pair
+ * anymore (see lib/booking/libraryStatus.ts) — status.isOpen and
+ * status.todayHoursLabel are the single source of truth, and price is
+ * derived from the cheapest (or currently-active) slot rate.
+ */
+function priceDisplay(library: LibraryCard): { label: string; rate: number } | null {
+  const activeSlots = library.slots.filter((s) => s.is_active)
+  if (activeSlots.length === 0) return null
 
-function isOpenNow(openRaw: string, closeRaw: string): boolean {
-  try {
-    const d   = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
-    const now = d.getHours() * 60 + d.getMinutes()
-    const p   = (t: string) => { const [h, m] = t.split(':').map(Number); return h * 60 + (m ?? 0) }
-    return now >= p(openRaw) && now < p(closeRaw)
-  } catch { return false }
+  if (library.status.isOpen && library.status.currentSlot) {
+    return { label: 'Now', rate: effectiveSlotRate(library.status.currentSlot) }
+  }
+
+  const lowest = [...activeSlots].sort(
+    (a, b) => effectiveSlotRate(a) - effectiveSlotRate(b),
+  )[0]
+  return { label: 'From', rate: effectiveSlotRate(lowest) }
 }
 
 // ── Fallback: no API key → show list with "Open in Maps" links ────────────────
@@ -66,7 +73,8 @@ function MapFallback({ libraries, userLat, userLng }: Props) {
         const mapsUrl = lib.latitude && lib.longitude
           ? `https://www.google.com/maps/search/?api=1&query=${lib.latitude},${lib.longitude}`
           : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([lib.name, lib.area, lib.city].filter(Boolean).join(', '))}`
-        const open = isOpenNow(lib.open_time, lib.close_time)
+        const open  = lib.status.isOpen
+        const price = priceDisplay(lib)
         return (
           <div key={lib.id} className="bg-white rounded-xl border border-[#E4EAF2] p-3 flex items-center gap-3">
             <div className="flex-1 min-w-0">
@@ -76,7 +84,9 @@ function MapFallback({ libraries, userLat, userLng }: Props) {
                 <span className={cn('text-[10px] font-semibold', open ? 'text-[#0D7C54]' : 'text-[#9AACBE]')}>
                   {open ? '● Open' : '○ Closed'}
                 </span>
-                <span className="text-[10px] text-[#9AACBE]">₹{lib.base_price}/hr</span>
+                {price && (
+                  <span className="text-[10px] text-[#9AACBE]">{price.label} ₹{price.rate}/hr</span>
+                )}
                 {lib.distance_km != null && (
                   <span className="text-[10px] text-[#9AACBE]">{lib.distance_km} km</span>
                 )}
@@ -160,7 +170,8 @@ export default function MapView({ libraries, userLat, userLng }: Props) {
     markersRef.current = libraries
       .filter((l) => l.latitude != null && l.longitude != null)
       .map((lib) => {
-        const open = isOpenNow(lib.open_time, lib.close_time)
+        const open  = lib.status.isOpen
+        const price = priceDisplay(lib)
         const marker = new window.google.maps.Marker({
           position: { lat: Number(lib.latitude), lng: Number(lib.longitude) },
           map,
@@ -183,7 +194,7 @@ export default function MapView({ libraries, userLat, userLng }: Props) {
               <p style="font-size:11px;color:#6E7F94;margin:3px 0 0">${[lib.area, lib.city].filter(Boolean).join(', ')}</p>
               <div style="display:flex;gap:8px;margin-top:6px;font-size:11px">
                 <span style="color:${open ? '#0D7C54' : '#9AACBE'}">${open ? '● Open' : '○ Closed'}</span>
-                <span style="color:#6E7F94">₹${lib.base_price}/hr</span>
+                ${price ? `<span style="color:#6E7F94">${price.label} ₹${price.rate}/hr</span>` : ''}
                 <span style="color:${lib.available_seats === 0 ? '#C5282C' : '#0D7C54'}">${lib.available_seats} seats free</span>
               </div>
               <a href="/library/${lib.id}" style="display:inline-block;margin-top:8px;padding:4px 12px;background:#1246FF;color:#fff;border-radius:6px;font-size:11px;font-weight:600;text-decoration:none">
@@ -250,18 +261,25 @@ export default function MapView({ libraries, userLat, userLng }: Props) {
               <div className="flex items-center gap-2">
                 <h3 className="text-[14px] font-semibold text-[#0D1117] truncate">{selected.name}</h3>
                 <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded-full flex-shrink-0',
-                  isOpenNow(selected.open_time, selected.close_time)
+                  selected.status.isOpen
                     ? 'bg-[#D1FAE5] text-[#0D7C54]'
                     : 'bg-[#F4F7FB] text-[#9AACBE]'
                 )}>
-                  {isOpenNow(selected.open_time, selected.close_time) ? '● Open' : '○ Closed'}
+                  {selected.status.isOpen ? '● Open' : '○ Closed'}
                 </span>
               </div>
               <p className="text-[11px] text-[#9AACBE] mt-0.5 truncate">
                 {[selected.area, selected.city].filter(Boolean).join(', ')}
               </p>
               <div className="flex items-center gap-3 mt-2 text-[11px]">
-                <span className="text-[#0D1117] font-semibold">₹{selected.base_price}/hr</span>
+                {(() => {
+                  const price = priceDisplay(selected)
+                  return price ? (
+                    <span className="text-[#0D1117] font-semibold">{price.label} ₹{price.rate}/hr</span>
+                  ) : (
+                    <span className="text-[#9AACBE]">No slots configured</span>
+                  )
+                })()}
                 <span className={cn('font-medium', selected.available_seats === 0 ? 'text-[#C5282C]' : 'text-[#0D7C54]')}>
                   {selected.available_seats} seats free
                 </span>

@@ -390,6 +390,14 @@ export async function seniorManualBook(
     .single()
 
   if (bookErr || !booking) {
+    // PostgreSQL error 23P01 = exclusion_violation, raised by the
+    // no_overlapping_bookings EXCLUDE constraint — the hard backstop against
+    // double-booking. Can fire if this manual booking races against an
+    // online booking or another staff/owner action for the same seat/time.
+    if ((bookErr as any)?.code === '23P01') {
+      logError('seniorManualBook', `Exclusion violation — seat ${seatId} booked concurrently`, bookErr)
+      return { success: false, error: 'This seat was just booked by someone else. Please refresh and choose another seat.' }
+    }
     logError('seniorManualBook', 'Insert failed', bookErr)
     return { success: false, error: bookErr?.message ?? 'Failed to create booking' }
   }

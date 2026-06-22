@@ -29,7 +29,8 @@ import {
   validateISTRange,
   inputToDB,
 } from '@/lib/ist'
-import { fetchActiveSlotConfigs, fetchSlotConfigs } from '@/lib/booking/slotConfigService'
+import { fetchActiveSlotConfigs, fetchSlotConfigs, fetchActiveSlotConfigsCached } from '@/lib/booking/slotConfigService'
+import { getActiveCitiesCached } from '@/lib/booking/citiesCache'
 import { calculateBookingAmount }   from '@/lib/booking/pricing'
 import { validateBooking } from '@/lib/booking/slotBoundaryValidation'
 import { resolveLibraryStatus, type LibraryStatus } from '@/lib/booking/libraryStatus'
@@ -356,15 +357,11 @@ export async function exploreLibraries(filters: ExploreFilters = {}): Promise<{
     total   = count ?? 0
   }
 
-  // Cities dropdown (always all active cities for the switcher)
-  const { data: citiesData } = await supabase
-    .from('libraries')
-    .select('city')
-    .eq('is_active', true)
-    .not('city', 'is', null)
-  const cities = [
-    ...new Set((citiesData ?? []).map((c: any) => c.city as string).filter(Boolean)),
-  ]
+  // Cities dropdown (always all active cities for the switcher).
+  // Cached — this list only changes when a library is published/unpublished
+  // in a city, not on every explore page load/filter change/pagination
+  // click. See lib/booking/citiesCache.ts.
+  const cities = await getActiveCitiesCached()
 
   if (!allRows.length) return { libraries: [], total: 0, cities, location_mode: locationMode }
 
@@ -529,10 +526,17 @@ export async function getLibraryDetail(
  * This is the SAME data used by lib/booking/pricing.ts to resolve the price
  * of a booking — what the student sees here is exactly what they'll be
  * charged if their booking's start time falls in one of these slots.
+ *
+ * Uses the cached read path (fetchActiveSlotConfigsCached) since this is a
+ * pure display call with no payment decision riding on it directly — the
+ * actual charge is always re-validated against fresh data in
+ * getBookingPricePreview/initiateBooking, which deliberately do NOT use the
+ * cache. Slots are invalidated immediately on any owner edit via
+ * revalidateSlotConfigsCache(), so staleness here is a non-issue in
+ * normal operation.
  */
 export async function getLibrarySlots(libraryId: string): Promise<SlotConfig[]> {
-  const supabase = await createServerSupabaseClient()
-  return fetchActiveSlotConfigs(supabase, libraryId)
+  return fetchActiveSlotConfigsCached(libraryId)
 }
 
 /**
@@ -722,41 +726,7 @@ export async function initiateBooking(
   const rangeCheck = validateISTRange(start, end, 12)
   if (rangeCheck.ok === false) return { success: false, error: rangeCheck.error }
 
-  // Fetch library — cast to any so TS doesn't error on razorpay_account_id
-  // (the column exists after migration but Supabase's generated types may lag)
-  const { data: libRaw, error: libErr } = await supabase
-    .from('libraries')
-    .select('id, name, is_active')
-    .eq('id', libraryId)
-    .eq('is_active', true)
-    .maybeSingle()
-
-  if (libErr || !libRaw)
-    return { success: false, error: 'Library not found or inactive' }
-
-  // SLOT-ONLY ARCHITECTURE: the booking must fit entirely inside one active
-  // slot. This single check replaces the old operating-hours check AND
-  // implicitly determines pricing (the containing slot IS the price source —
-  // see lib/booking/pricing.ts). No base_price fallback.
-  const slots = await fetchActiveSlotConfigs(supabase, libraryId)
-  const windowCheck = validateBooking({ slots, startTime: start, endTime: end, graceMinutes: 5 })
-  if (windowCheck.ok === false) return { success: false, error: windowCheck.error }
-
-  // Fetch razorpay_account_id separately with cast (avoids generated-type error)
-  const { data: libExtra } = await (supabase as any)
-    .from('libraries')
-    .select('razorpay_account_id')
-    .eq('id', libraryId)
-    .maybeSingle() as { data: { razorpay_account_id: string | null } | null }
-
-  const lib = {
-    id:                  libRaw.id,
-    name:                libRaw.name,
-    is_active:           libRaw.is_active,
-    razorpay_account_id: libExtra?.razorpay_account_id ?? null,
-  }
-
-  // Verify seat
+  // ── Verify seat early — cheap, indexed, needed before any conflict check ──
   const { data: seat } = await supabase
     .from('seats')
     .select('id, library_id, is_active')
@@ -767,26 +737,27 @@ export async function initiateBooking(
   if (!seat)          return { success: false, error: 'Seat not found' }
   if (!seat.is_active) return { success: false, error: 'This seat is currently inactive' }
 
-  // ── Race condition protection ──────────────────────────────────────
-  // 1. Application-level advisory lock: serialises concurrent booking
-  //    attempts for the same seat. pg_try_advisory_xact_lock takes a
-  //    bigint key derived from the seat UUID — no two transactions for
-  //    the same seat run simultaneously.
-  // 2. The DB exclusion constraint (no_overlapping_bookings) is the
-  //    hard backstop — it rejects overlapping INSERTs with error 23P01
-  //    even if the application check is bypassed.
-  const { data: lockData, error: lockErr } = await supabase
-    .rpc('try_lock_seat', { p_seat_id: seatId }) as
-    { data: boolean | null; error: any }
-
-  // RPC may not exist in dev before migration — fall through gracefully
-  if (lockErr) {
-    console.warn('[initiateBooking] try_lock_seat RPC not available — proceeding without advisory lock', lockErr.message)
-  } else if (lockData === false) {
-    return { success: false, error: 'Someone else is booking this seat right now. Please try again in a moment.' }
-  }
-
-  // Seat conflict check (still needed as pre-flight; exclusion constraint is backstop)
+  // ── Race condition protection — conflict checks run FIRST, before any
+  //    expensive work (Razorpay order creation), so that when two people
+  //    tap "Book" on the same seat at the same time, the losing request
+  //    is rejected immediately instead of after creating a payment order
+  //    it will never use.
+  //
+  //    NOTE ON THE ADVISORY LOCK THAT USED TO BE HERE: pg_try_advisory_xact_lock
+  //    is transaction-scoped, and each Supabase RPC call runs in its own
+  //    transaction that commits immediately on return — so the lock was
+  //    released before this function ever reached the INSERT below. It was
+  //    providing no real protection and was removed rather than left as
+  //    misleading dead code. Don't re-add it without first wrapping the
+  //    lock + the bookings INSERT in a single SQL function (one transaction).
+  //
+  //    The actual, real guarantee against double-booking is the
+  //    `no_overlapping_bookings` EXCLUDE constraint on bookings — enforced
+  //    by Postgres itself, cannot be bypassed by application code, and
+  //    rejects overlapping INSERTs with error 23P01 even if every check
+  //    below somehow passed for two concurrent requests. The checks below
+  //    are a fast pre-flight to give a clean error message and avoid
+  //    wasted work; the constraint is the hard backstop.
   const { data: seatConflict } = await supabase
     .from('bookings')
     .select('id')
@@ -812,6 +783,34 @@ export async function initiateBooking(
   if (userConflict?.length)
     return { success: false, error: 'You already have a booking during this time slot' }
 
+  // Fetch library — single query for both columns (previously two separate
+  // queries to the same table; merged now that razorpay_account_id is in
+  // the generated Supabase types).
+  const { data: libRaw, error: libErr } = await supabase
+    .from('libraries')
+    .select('id, name, is_active, razorpay_account_id')
+    .eq('id', libraryId)
+    .eq('is_active', true)
+    .maybeSingle()
+
+  if (libErr || !libRaw)
+    return { success: false, error: 'Library not found or inactive' }
+
+  const lib = {
+    id:                  libRaw.id,
+    name:                libRaw.name,
+    is_active:           libRaw.is_active,
+    razorpay_account_id: (libRaw as any).razorpay_account_id ?? null,
+  }
+
+  // SLOT-ONLY ARCHITECTURE: the booking must fit entirely inside one active
+  // slot. This single check replaces the old operating-hours check AND
+  // implicitly determines pricing (the containing slot IS the price source —
+  // see lib/booking/pricing.ts). No base_price fallback.
+  const slots = await fetchActiveSlotConfigs(supabase, libraryId)
+  const windowCheck = validateBooking({ slots, startTime: start, endTime: end, graceMinutes: 5 })
+  if (windowCheck.ok === false) return { success: false, error: windowCheck.error }
+
   // Calculate amount — single source of truth shared with preview UI,
   // owner/staff manual bookings, and confirmation (lib/booking/pricing.ts).
   // The slot was already confirmed to contain `start` by validateBooking
@@ -821,7 +820,8 @@ export async function initiateBooking(
   if (amountINR <= 0)
     return { success: false, error: 'Invalid booking amount. Please contact the library.' }
 
-  // Create Razorpay order
+  // Create Razorpay order — only reached after every cheap conflict check
+  // above has passed, so a losing request in a race never gets here.
   const orderResult = await createRazorpayOrder({
     amountINR,
     razorpayAccountId: lib.razorpay_account_id,
@@ -858,9 +858,10 @@ export async function initiateBooking(
     .single()
 
   if (bookErr || !booking) {
-    // PostgreSQL error 23P01 = exclusion_violation (from no_overlapping_bookings constraint)
-    // This is the race condition backstop — catches the rare case where two concurrent
-    // transactions both pass the application-level check but one wins the DB lock.
+    // PostgreSQL error 23P01 = exclusion_violation (from the no_overlapping_bookings
+    // EXCLUDE constraint). This is the hard backstop that makes double-booking
+    // impossible even if two requests somehow both pass the conflict checks
+    // above — Postgres rejects the second overlapping INSERT outright.
     if ((bookErr as any)?.code === '23P01') {
       return { success: false, error: 'This seat was just booked by someone else. Please choose another seat.' }
     }
@@ -1658,10 +1659,11 @@ export async function initiateBookingExtension(input: {
     return { success: false, error: 'Seat already booked in this extended time window' }
 
   // Calculate extension amount (same pricing engine — prorate from current end to new end)
-  const extensionSlots = await fetchActiveSlotConfigs(supabase, booking.library_id as string)
+  // Reuses `slots` fetched above for the boundary check — same library,
+  // same request, no reason to hit the DB twice for identical data.
   let extensionAmount: number
   try {
-    const resolution = calculateBookingAmount(extensionSlots, booking.end_time as string, newEnd)
+    const resolution = calculateBookingAmount(slots, booking.end_time as string, newEnd)
     extensionAmount = resolution.amount
   } catch {
     return { success: false, error: 'No active slot covers the extension period. Please book a new session.' }
@@ -1750,7 +1752,16 @@ export async function confirmBookingExtension(input: {
       .eq('status', 'pending'),
   ])
 
-  if (bRes.error) return { success: false, error: bRes.error.message }
+  if (bRes.error) {
+    // PostgreSQL error 23P01 = exclusion_violation, from the
+    // no_overlapping_bookings EXCLUDE constraint — catches the rare case
+    // where someone else booked the seat for the extended window between
+    // initiateBookingExtension's conflict check and this confirm step.
+    if ((bRes.error as any)?.code === '23P01') {
+      return { success: false, error: 'Another booking was just made for this seat in the extended window. Contact support if payment was deducted.' }
+    }
+    return { success: false, error: bRes.error.message }
+  }
 
   revalidatePath('/bookings')
   return { success: true, data: { bookingId: input.bookingId, newEndTime: newEnd } }

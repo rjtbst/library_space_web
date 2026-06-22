@@ -4,6 +4,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireActionRole } from '@/lib/auth/guards'
 import { z } from 'zod'
 import type { ActionResult } from '@/lib/actions/auth'
+import { revalidateCitiesCache } from '@/lib/booking/citiesCache'
 
 /* ─── Shared Zod schema ─────────────────────────────────────────────────────── */
 const librarySchema = z.object({
@@ -473,5 +474,6 @@ export async function publishLibrary(libraryId: string): Promise<ActionResult> {
     .from('libraries').update({ is_active: true } as any).eq('id', libraryId).eq('owner_id', user.id)
 
   if (error) { console.error('publishLibrary error:', error); return { success: false, error: error.message } }
+  revalidateCitiesCache()
   return { success: true, data: undefined }
 }

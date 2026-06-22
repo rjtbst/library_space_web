@@ -20,9 +20,11 @@ import {
   fetchActiveSlotConfigs,
   upsertSlotConfig as upsertSlotConfigDb,
   toggleSlotConfig as toggleSlotConfigDb,
+  revalidateSlotConfigsCache,
 } from '@/lib/booking/slotConfigService'
+import { revalidateCitiesCache } from '@/lib/booking/citiesCache'
 import { validateBooking } from '@/lib/booking/slotBoundaryValidation'
-import { getLibraryBookingRevenue, getSubscriptionRevenueForLibrary } from '@/lib/booking/revenue'
+import { getLibraryBookingRevenue } from '@/lib/booking/revenue'
 import type { SlotConfig, SlotConfigInput } from '@/lib/booking/types'
 
 // Re-exported for backward compatibility — components import SlotConfig from
@@ -103,13 +105,28 @@ export async function getOwnerLibraries(): Promise<OwnerLibrary[]> {
     const allPlanIds    = [...new Set(planLibsRes.data?.map((r) => r.plan_id) ?? [])]
     const allBookingIds = bookingsRes.data?.map((b) => b.id) ?? []
 
-    const [subsRes, paymentsRes] = await Promise.all([
+    const [subsRes, paymentsRes, subPaymentsRes] = await Promise.all([
       allPlanIds.length
         ? supabase.from('subscriptions').select('plan_id').eq('status', 'active' as never).in('plan_id', allPlanIds)
         : Promise.resolve({ data: [] as { plan_id: string }[] }),
       allBookingIds.length
         ? supabase.from('payments').select('booking_id, amount').eq('status', 'paid' as never).in('booking_id', allBookingIds)
         : Promise.resolve({ data: [] as { booking_id: string; amount: number }[] }),
+      // Subscription-purchase payments for ALL of this owner's plans in ONE
+      // query, instead of one query per library (see comment below). Mirrors
+      // getSubscriptionRevenueForLibrary's own query in lib/booking/revenue.ts
+      // exactly — same table, same filters, same join — just batched across
+      // every plan at once rather than one plan-set per library.
+      allPlanIds.length
+        ? supabase
+            .from('payments')
+            .select('amount, subscriptions!inner(plan_id, created_at)')
+            .eq('status', 'paid' as never)
+            .is('booking_id', null)
+            .in('subscriptions.plan_id', allPlanIds)
+            .gte('created_at', mStart)
+            .lte('created_at', mEnd)
+        : Promise.resolve({ data: [] as { amount: number; subscriptions: { plan_id: string; created_at: string } }[] }),
     ])
 
     const seatsByLib    = groupBy(seatsRes.data ?? [], 'library_id')
@@ -130,21 +147,29 @@ export async function getOwnerLibraries(): Promise<OwnerLibrary[]> {
       payByBooking[p.booking_id] = Number(p.amount ?? 0)
     }
 
-    // Subscription revenue per library — centralized in lib/booking/revenue.ts
-    // so this matches getDashboardStats exactly. Run in parallel per library;
-    // libIds is typically small (a handful of libraries per owner).
-    const subscriptionRevenueByLib = await Promise.all(
-      libIds.map((id) => getSubscriptionRevenueForLibrary(supabase, id, mStart, mEnd)),
-    )
-    const subRevenueById: Record<string, number> = {}
-    libIds.forEach((id, i) => { subRevenueById[id] = subscriptionRevenueByLib[i] })
+    // Subscription revenue PER PLAN (not yet per library) — summed once here,
+    // then attributed to each library below via plansByLib. This preserves
+    // the exact semantic documented in getSubscriptionRevenueForLibrary: a
+    // 'cross' scope plan linked to multiple libraries contributes its FULL
+    // payment amount to EACH linked library (not divided), so summing
+    // month_subscription_revenue across all of an owner's libraries can
+    // double-count a single cross-library plan purchase — that's intentional,
+    // matching the original per-library function's documented behavior.
+    const subRevenueByPlan: Record<string, number> = {}
+    for (const row of (subPaymentsRes.data ?? []) as any[]) {
+      const planId = row.subscriptions?.plan_id
+      if (!planId) continue
+      subRevenueByPlan[planId] = (subRevenueByPlan[planId] ?? 0) + Number(row.amount ?? 0)
+    }
 
     return libs.map((lib) => {
       const seats      = seatsByLib[lib.id] ?? []
       const planIds    = (plansByLib[lib.id] ?? []).map((p) => p.plan_id)
       const bookingIds = (bookingsByLib[lib.id] ?? []).map((b) => b.id)
       const monthRevenue = bookingIds.reduce((sum, bid) => sum + (payByBooking[bid] ?? 0), 0)
-      const monthSubRevenue = subRevenueById[lib.id] ?? 0
+      // Sum the full subscription-payment amount for every plan linked to
+      // this library — see the double-counting note above subRevenueByPlan.
+      const monthSubRevenue = planIds.reduce((sum, pid) => sum + (subRevenueByPlan[pid] ?? 0), 0)
       return {
         id:            lib.id,
         name:          lib.name,
@@ -728,6 +753,16 @@ export async function manualBookSeat(
     .single()
 
   if (bookErr || !booking) {
+    // PostgreSQL error 23P01 = exclusion_violation, raised by the
+    // no_overlapping_bookings EXCLUDE constraint. This is the hard backstop
+    // against double-booking — it can fire here if a student's online
+    // booking and an owner's walk-in booking for the same seat/time race
+    // each other. Without this check the owner would see a raw Postgres
+    // error message instead of a clear "already booked" message.
+    if ((bookErr as any)?.code === '23P01') {
+      logError('manualBookSeat', `Exclusion violation — seat ${seatId} booked concurrently`, bookErr)
+      return { success: false, error: 'This seat was just booked by someone else. Please refresh and choose another seat.' }
+    }
     logError('manualBookSeat', 'Insert failed', bookErr)
     return { success: false, error: bookErr?.message ?? 'Failed to create booking' }
   }
@@ -907,6 +942,7 @@ export async function upsertSlotConfig(
   if (result.success === false) return result
 
   log('upsertSlotConfig', `library=${libraryId} slot=${result.data.id}`)
+  revalidateSlotConfigsCache(libraryId)
   revalidatePath('/dashboard/slot-config')
   revalidatePath('/dashboard/bookings')
   return result
@@ -926,6 +962,7 @@ export async function toggleSlotConfig(
   if (result.success === false) return result
 
   log('toggleSlotConfig', `library=${libraryId} slot=${slotId} is_active=${is_active}`)
+  revalidateSlotConfigsCache(libraryId)
   revalidatePath('/dashboard/slot-config')
   revalidatePath('/dashboard/bookings')
   return result
@@ -1051,6 +1088,7 @@ export async function toggleLibraryActive(libraryId: string, is_active: boolean)
   if (error) { logError('toggleLibraryActive', 'Update failed', error); return { success: false, error: error.message } }
 
   log('toggleLibraryActive', `library=${libraryId} is_active=${is_active}`)
+  revalidateCitiesCache()
   revalidatePath('/dashboard/my-libraries')
   revalidatePath('/dashboard')
   return { success: true, data: undefined }
@@ -1101,6 +1139,7 @@ export async function updateLibraryInfo(
   if (error) { logError('updateLibraryInfo', 'Update failed', error); return { success: false, error: error.message } }
 
   log('updateLibraryInfo', `library=${libraryId} name=${patch.name}`)
+  revalidateCitiesCache()
   revalidatePath('/dashboard/my-libraries')
   revalidatePath('/dashboard')
   return { success: true, data: undefined }

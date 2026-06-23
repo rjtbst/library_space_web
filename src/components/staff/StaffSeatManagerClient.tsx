@@ -2,7 +2,7 @@
 
 // src/components/staff/StaffSeatManagerClient.tsx
 
-import { useState, useTransition } from 'react'
+import { useState, useTransition, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import type { SeniorSeatRow } from '@/lib/actions/staff-seat-actions'
 import {
@@ -10,6 +10,7 @@ import {
   seniorAddSeatRow,
   seniorManualBook,
   seniorForceFree,
+  getSeniorSeatLayout,
 } from '@/lib/actions/staff-seat-actions'
 import {
   toISTInputValue,
@@ -18,6 +19,7 @@ import {
   fmtInputPreview,
   validateISTRange,
 } from '@/lib/ist'
+import { useSeatLayoutRealtime } from '@/hooks/useSeatLayoutRealtime'
 
 /* ─── Colors — staff teal palette (matches WalkInClient / StaffBookingsClient) */
 const ACCENT       = '#0597A7'
@@ -88,6 +90,27 @@ export default function StaffSeatManagerClient({
   const active   = seats.filter(s => s.is_active).length
   const booked   = seats.filter(s => s.live_status === 'booked').length
   const inactive = seats.filter(s => !s.is_active).length
+
+  /* ── Realtime: live seat status across multiple staff/owner terminals
+   * viewing the same library at once. Any insert/update/delete on
+   * `bookings` for this library triggers a fresh getSeniorSeatLayout()
+   * fetch — e.g. a student's online booking, another terminal's check-in,
+   * or an owner force-freeing a seat all show up here without a manual
+   * page refresh. See hooks/useSeatLayoutRealtime.ts for why this
+   * re-fetches rather than patching the changed row directly. */
+  const refreshSeats = useCallback(() => {
+    getSeniorSeatLayout(libraryId).then((fresh) => {
+      setSeats(fresh)
+      // Keep the open side panel in sync if it's showing the seat that
+      // just changed, without auto-closing it on the staff member.
+      setSelected((prevSelected) => {
+        if (!prevSelected) return null
+        return fresh.find((s) => s.id === prevSelected.id) ?? prevSelected
+      })
+    })
+  }, [libraryId])
+
+  useSeatLayoutRealtime(libraryId, refreshSeats)
 
   /* ── Handlers ────────────────────────────────────────────────────────── */
   const handleToggle = () => {

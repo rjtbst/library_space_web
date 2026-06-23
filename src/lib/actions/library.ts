@@ -4,7 +4,6 @@ import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { requireActionRole } from '@/lib/auth/guards'
 import { z } from 'zod'
 import type { ActionResult } from '@/lib/actions/auth'
-import { revalidateCitiesCache } from '@/lib/booking/citiesCache'
 
 /* ─── Shared Zod schema ─────────────────────────────────────────────────────── */
 const librarySchema = z.object({
@@ -13,9 +12,6 @@ const librarySchema = z.object({
   city:                z.string().min(1).max(80).trim(),
   area:                z.string().min(1).max(120).trim(),
   address:             z.string().min(5).max(400).trim(),
-  open_time:           z.string().regex(/^\d{2}:\d{2}$/),
-  close_time:          z.string().regex(/^\d{2}:\d{2}$/),
-  base_price:          z.number().positive(),
   total_seats:         z.number().int().positive(),
   amenity_ids:         z.array(z.string().uuid()).min(1),
   latitude:            z.number().nullable().optional(),
@@ -35,9 +31,6 @@ export type LibraryForEdit = {
   city:                string
   area:                string
   address:             string
-  open_time:           string
-  close_time:          string
-  base_price:          number | null
   total_seats:         number
   amenityIds:          string[]      // UUIDs
   latitude:            number | null
@@ -54,7 +47,7 @@ export async function getLibraryForEdit(
 
   const { data: lib } = await supabase
     .from('libraries')
-    .select('id, name, state, city, area, address, open_time, close_time, base_price, latitude, longitude, razorpay_account_id')
+    .select('id, name, state, city, area, address, latitude, longitude, razorpay_account_id')
     .eq('id', libraryId)
     .eq('owner_id', user.id)
     .maybeSingle()
@@ -85,9 +78,6 @@ export async function getLibraryForEdit(
     city:                lib.city                ?? '',
     area:                lib.area                ?? '',
     address:             lib.address             ?? '',
-    open_time:           fmt(lib.open_time)       || '06:00',
-    close_time:          fmt(lib.close_time)      || '22:00',
-    base_price:          lib.base_price  != null ? Number(lib.base_price)  : null,
     total_seats:         seatCount               ?? 0,
     amenityIds,
     latitude:            lib.latitude   != null ? Number(lib.latitude)   : null,
@@ -113,7 +103,7 @@ export async function createLibrary(
 
   const {
     name, state, city, area, address,
-    open_time, close_time, base_price, total_seats, amenity_ids,
+    total_seats, amenity_ids,
     latitude, longitude, razorpay_account_id,
   } = parsed.data
 
@@ -126,9 +116,7 @@ export async function createLibrary(
       city,
       area,
       address,
-      open_time,
-      close_time,
-      base_price,
+     
       latitude:            latitude            ?? null,
       longitude:           longitude           ?? null,
       razorpay_account_id: razorpay_account_id ?? null,
@@ -172,7 +160,7 @@ export async function updateLibrary(
 
   const {
     name, state, city, area, address,
-    open_time, close_time, base_price,
+   
     amenity_ids, latitude, longitude, razorpay_account_id,
   } = parsed.data
 
@@ -184,9 +172,7 @@ export async function updateLibrary(
       city,
       area,
       address,
-      open_time,
-      close_time,
-      base_price,
+   
       latitude:            latitude            ?? null,
       longitude:           longitude           ?? null,
       razorpay_account_id: razorpay_account_id ?? null,
@@ -407,8 +393,7 @@ export async function deleteLibraryPhoto(imageId: string): Promise<ActionResult>
 ═══════════════════════════════════════════════════════════════ */
 export type LibrarySummary = {
   name: string; city: string; area: string
-  hasAddress: boolean; basePrice: number | null
-  openTime: string; closeTime: string
+  hasAddress: boolean; 
   totalSeats: number; photoCount: number; coverUrl: string | null
 }
 
@@ -419,7 +404,7 @@ export async function getLibraryOnboardingSummary(libraryId: string): Promise<Li
 
   const { data: lib } = await supabase
     .from('libraries')
-    .select('name, city, area, address, base_price, open_time, close_time')
+    .select('name, city, area, address')
     .eq('id', libraryId).eq('owner_id', user.id).maybeSingle()
   if (!lib) return null
 
@@ -438,9 +423,6 @@ export async function getLibraryOnboardingSummary(libraryId: string): Promise<Li
     city:       lib.city      ?? '',
     area:       lib.area      ?? '',
     hasAddress: !!(lib.address?.trim()),
-    basePrice:  lib.base_price != null ? Number(lib.base_price) : null,
-    openTime:   fmt(lib.open_time),
-    closeTime:  fmt(lib.close_time),
     totalSeats: seatCount  ?? 0,
     photoCount: photos?.length ?? 0,
     coverUrl:   photos?.find(p => p.is_cover)?.image_url ?? photos?.[0]?.image_url ?? null,
@@ -474,6 +456,5 @@ export async function publishLibrary(libraryId: string): Promise<ActionResult> {
     .from('libraries').update({ is_active: true } as any).eq('id', libraryId).eq('owner_id', user.id)
 
   if (error) { console.error('publishLibrary error:', error); return { success: false, error: error.message } }
-  revalidateCitiesCache()
   return { success: true, data: undefined }
 }

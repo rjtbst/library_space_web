@@ -1,4 +1,3 @@
-import { SHADOW_SM, BG_CARD, BORDER } from '@/lib/constants/theme'
 import { CSSProperties, HTMLAttributes } from 'react'
 
 interface CardProps extends HTMLAttributes<HTMLDivElement> {
@@ -9,6 +8,13 @@ interface CardProps extends HTMLAttributes<HTMLDivElement> {
   hoverable?: boolean
 }
 
+/**
+ * Visual styling (background/border/radius/shadow) now lives in
+ * .dash-card / .dash-card--hoverable in globals.css — see the
+ * "DASHBOARD COMPONENT CLASSES" section there. Padding stays inline since
+ * it varies per call site; the hover shadow swap is now a plain CSS :hover
+ * rule instead of onMouseEnter/onMouseLeave handlers.
+ */
 export function Card({
   children,
   style,
@@ -19,28 +25,8 @@ export function Card({
 }: CardProps) {
   return (
     <div
-      className={className}
-      style={{
-        background: BG_CARD,
-        border: `1px solid ${BORDER}`,
-        borderRadius: 14,
-        padding,
-        boxShadow: SHADOW_SM,
-        transition: hoverable ? 'box-shadow .15s' : undefined,
-        ...style,
-      }}
-      onMouseEnter={
-        hoverable
-          ? e =>
-              (e.currentTarget.style.boxShadow =
-                '0 6px 24px rgba(10,13,18,.10)')
-          : undefined
-      }
-      onMouseLeave={
-        hoverable
-          ? e => (e.currentTarget.style.boxShadow = SHADOW_SM)
-          : undefined
-      }
+      className={['dash-card', hoverable && 'dash-card--hoverable', className].filter(Boolean).join(' ')}
+      style={{ padding, ...style }}
       {...props}
     >
       {children}

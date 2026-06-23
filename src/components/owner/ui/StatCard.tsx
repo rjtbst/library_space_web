@@ -1,4 +1,4 @@
-import { BG_CARD, BORDER, SHADOW_SM, FONT_DISPLAY, TEXT_PRIMARY, TEXT_SECONDARY, ACCENT } from '@/lib/constants/theme'
+import { ACCENT } from '@/lib/constants/theme'
 
 interface StatCardProps {
   icon:        string
@@ -9,25 +9,26 @@ interface StatCardProps {
   sub?:        string
 }
 
+/**
+ * Visual treatment (background/border/radius/shadow/typography) now lives
+ * in .dash-stat-card / .dash-stat-card__* in globals.css. Layout (flex,
+ * gaps, spacing between the icon row and value) stays inline since it's
+ * structural to this specific component, not a reusable visual pattern.
+ */
 export function StatCard({ icon, label, value, delta, deltaColor: dc, sub }: StatCardProps) {
   return (
-    <div style={{
-      background: BG_CARD, border: `1px solid ${BORDER}`, borderRadius: 14,
-      padding: '16px 18px', boxShadow: SHADOW_SM, flex: 1, minWidth: 0,
-    }}>
+    <div className="dash-stat-card" style={{ padding: '16px 18px', flex: 1, minWidth: 0 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-        <span style={{ fontSize: 11, fontWeight: 600, color: TEXT_SECONDARY, textTransform: 'uppercase', letterSpacing: '.05em' }}>
-          {label}
-        </span>
+        <span className="dash-stat-card__label">{label}</span>
         <span style={{ fontSize: 20 }}>{icon}</span>
       </div>
-      <div style={{ fontSize: 26, fontWeight: 800, fontFamily: FONT_DISPLAY, color: TEXT_PRIMARY, letterSpacing: '-0.02em', marginBottom: 4 }}>
+      <div className="dash-stat-card__value" style={{ marginBottom: 4 }}>
         {value}
       </div>
       {delta && (
         <div style={{ fontSize: 12, fontWeight: 600, color: dc ?? ACCENT }}>
           {delta}
-          {sub && <span style={{ color: '#9AAAB8', fontWeight: 400, marginLeft: 4 }}>{sub}</span>}
+          {sub && <span className="dash-stat-card__delta-sub" style={{ marginLeft: 4 }}>{sub}</span>}
         </div>
       )}
     </div>

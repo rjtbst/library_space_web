@@ -678,3 +678,180 @@ img, video { display: block; max-width: 100%; }
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* ═════════════════════════════════════════════════════════════════════════
+   DASHBOARD COMPONENT CLASSES (owner / staff / student)
+   ─────────────────────────────────────────────────────────────────────────
+   These classes back the shared components in components/owner/ui,
+   components/staff/ui, etc. (Card, StatusBadge, StatCard, EmptyState,
+   Toggle, ...). Added so those components render via CSS classes instead
+   of re-deriving the same inline `style={{...}}` object on every render.
+
+   DESIGN: every value below is copied EXACTLY from the existing inline
+   styles in lib/constants/theme.ts and the components that used them — no
+   visual change versus what's on screen today. The --dash-* variables here
+   intentionally mirror theme.ts's exported JS constants (ACCENT, BORDER,
+   TEXT_PRIMARY, etc.) so colors have ONE source of truth in spirit, even
+   though CSS and JS can't literally share a single file. If you ever
+   change a color in theme.ts, change the matching --dash-* variable here
+   too — they're listed in the same order as theme.ts for easy diffing.
+
+   This block only covers patterns already proven out in components/owner/ui.
+   Extend it incrementally as you convert more components — don't try to
+   pre-build classes for styles that don't exist yet.
+═════════════════════════════════════════════════════════════════════════ */
+:root {
+  /* Mirrors lib/constants/theme.ts — keep these two files in sync */
+  --dash-accent:        #0D7C54;
+  --dash-accent-light:  #D1FAE5;
+  --dash-blue:          #1E5CFF;
+  --dash-blue-dark:     #1447D4;
+  --dash-blue-light:    #E8EFFE;
+  --dash-teal:          #0597A7;
+  --dash-purple:        #7C3AED;
+  --dash-amber:         #F59E0B;
+  --dash-red:           #EF4444;
+
+  --dash-text-primary:   #0A0D12;
+  --dash-text-secondary: #6B7689;
+  --dash-text-muted:     #9AAAB8;
+  --dash-border:         #E2DDD4;
+  --dash-bg-card:        #FDFCF9;
+  --dash-bg-page:        #F4F7FB;
+  --dash-bg-hover:       #F0EDE8;
+
+  --dash-font-display: 'Syne', sans-serif;
+  --dash-font-body:    'DM Sans', sans-serif;
+
+  --dash-shadow-sm:     0 2px 8px rgba(10,13,18,.04);
+  --dash-shadow-md:     0 6px 24px rgba(10,13,18,.10);
+  --dash-shadow-accent: 0 2px 10px rgba(13,124,84,.25);
+}
+
+/* ── Card — components/owner/ui/Card.tsx ─────────────────────────────────
+ * Default padding (18px 20px) and the hoverable shadow transition are kept
+ * as inline overrides in the component, since those vary per usage; only
+ * the part that was IDENTICAL on every single Card render moves here. */
+.dash-card {
+  background:    var(--dash-bg-card);
+  border:        1px solid var(--dash-border);
+  border-radius: 14px;
+  box-shadow:    var(--dash-shadow-sm);
+}
+.dash-card--hoverable {
+  transition: box-shadow .15s;
+}
+.dash-card--hoverable:hover {
+  box-shadow: var(--dash-shadow-md);
+}
+
+/* ── StatusBadge / ColorBadge — components/owner/ui/Badge.tsx ──────────── */
+.dash-badge {
+  display:       inline-block;
+  padding:       3px 10px;
+  border-radius: 20px;
+  font-size:     11px;
+  font-weight:   600;
+  white-space:   nowrap;
+}
+
+/* ── StatCard — components/owner/ui/StatCard.tsx ─────────────────────────
+ * Layout (flex, gaps) stays inline since it's structural, not styling —
+ * only the repeated visual treatment (background/border/shadow/typography)
+ * moves to classes. */
+.dash-stat-card {
+  background:    var(--dash-bg-card);
+  border:        1px solid var(--dash-border);
+  border-radius: 14px;
+  box-shadow:    var(--dash-shadow-sm);
+}
+.dash-stat-card__label {
+  font-size:      11px;
+  font-weight:    600;
+  color:          var(--dash-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.dash-stat-card__value {
+  font-size:      26px;
+  font-weight:    800;
+  font-family:    var(--dash-font-display);
+  color:          var(--dash-text-primary);
+  letter-spacing: -0.02em;
+}
+.dash-stat-card__delta-sub {
+  color:       var(--dash-text-muted);
+  font-weight: 400;
+}
+
+/* ── EmptyState — components/owner/ui/EmptyState.tsx ─────────────────────── */
+.dash-empty-state {
+  text-align: center;
+  padding:    48px 0;
+  color:      var(--dash-text-muted);
+}
+.dash-empty-state__icon {
+  font-size:     40px;
+  margin-bottom: 10px;
+}
+.dash-empty-state__title {
+  font-size:     15px;
+  font-weight:   700;
+  color:         var(--dash-text-primary);
+  margin-bottom: 4px;
+}
+.dash-empty-state__subtitle {
+  font-size:     13px;
+  color:         var(--dash-text-secondary);
+  margin-bottom: 16px;
+}
+
+/* ── Toggle — components/owner/ui/Toggle.tsx ─────────────────────────────
+ * The dot's position genuinely depends on the `on` boolean at runtime, so
+ * it's driven by a CSS variable (--toggle-dot-left) set inline by the
+ * component rather than a static class — everything else about the toggle
+ * is static and lives here. */
+.dash-toggle {
+  width:          36px;
+  height:         20px;
+  border-radius:  10px;
+  border:         none;
+  position:       relative;
+  padding:        0;
+  flex-shrink:    0;
+  transition:     background .2s;
+  cursor:         pointer;
+}
+.dash-toggle:disabled {
+  cursor:  not-allowed;
+  opacity: 0.6;
+}
+.dash-toggle__dot {
+  width:          14px;
+  height:         14px;
+  border-radius:  50%;
+  background:     #fff;
+  position:       absolute;
+  top:            3px;
+  left:           var(--toggle-dot-left, 3px);
+  transition:     left .2s;
+  box-shadow:     0 1px 3px rgba(0,0,0,.15);
+}
+
+/* ── Dashboard form input — matches INP_STYLE in lib/constants/theme.ts ─── */
+.dash-input {
+  width:          100%;
+  padding:        10px 12px;
+  border:         1.5px solid var(--dash-border);
+  border-radius:  9px;
+  font-size:      13px;
+  color:          var(--dash-text-primary);
+  font-family:    var(--dash-font-body);
+  background:     var(--dash-bg-card);
+  outline:        none;
+  box-sizing:     border-box;
+}
+.dash-input:focus {
+  border-color: var(--dash-blue);
+  box-shadow:   0 0 0 3px rgba(30,92,255,.1);
+}

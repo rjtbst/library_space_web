@@ -1,12 +1,14 @@
+// src/components/owner/seatManagerClient.tsx
 'use client'
 
 import { useState, useTransition, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import type { SeatRow } from '@/lib/actions/owner'
-import { toggleSeatActive, addSeatRow, manualBookSeat, forceFreeSeat, editSeatRow } from '@/lib/actions/owner'
+import { toggleSeatActive, addSeatRow, manualBookSeat, forceFreeSeat, editSeatRow, getSeatLayout } from '@/lib/actions/owner'
 import { toISTInputValue, inputToDB, fmtIST, fmtInputPreview } from '@/lib/ist'
 import { useOwner } from '@/contexts/OwnerContext'
 import { useToast } from '@/hooks/useToast'
+import { useSeatLayoutRealtime } from '@/hooks/useSeatLayoutRealtime'
 import {
   ACCENT, ACCENT_LIGHT, BLUE, BLUE_LIGHT, RED,
   BORDER, BG_CARD, SHADOW_SM,
@@ -88,6 +90,29 @@ export default function SeatManagerClient({
     booked:   seats.filter(s => s.live_status === 'booked').length,
     inactive: seats.filter(s => !s.is_active).length,
   }), [seats])
+
+  /* ── Realtime: live seat status across multiple owners/staff viewing ───
+   * the same library at once. Any insert/update/delete on `bookings` for
+   * this library triggers a fresh getSeatLayout() fetch, so this view
+   * reflects a student's online booking, another staff terminal's
+   * check-in, etc. without a manual page refresh. See
+   * hooks/useSeatLayoutRealtime.ts for why this re-fetches rather than
+   * patching the changed row directly. */
+  const refreshSeats = useCallback(() => {
+    getSeatLayout(libraryId).then((fresh) => {
+      setSeats(fresh)
+      // If the seat the owner currently has open in the side panel changed
+      // (e.g. someone else just booked it), update the panel to match —
+      // but don't auto-close it. The owner stays in control of dismissing
+      // the panel; they just see accurate, current status while it's open.
+      setSelected((prevSelected) => {
+        if (!prevSelected) return null
+        return fresh.find((s) => s.id === prevSelected.id) ?? prevSelected
+      })
+    })
+  }, [libraryId])
+
+  useSeatLayoutRealtime(libraryId, refreshSeats)
 
   /* ── Handlers ─────────────────────────────────────────────────────────── */
 

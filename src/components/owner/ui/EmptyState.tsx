@@ -1,5 +1,3 @@
-import { TEXT_PRIMARY, TEXT_SECONDARY } from '@/lib/constants/theme'
-
 interface EmptyStateProps {
   icon?:     string
   title:     string
@@ -7,12 +5,20 @@ interface EmptyStateProps {
   action?:   React.ReactNode
 }
 
+/**
+ * Visual treatment now lives in .dash-empty-state / .dash-empty-state__*
+ * in globals.css. (Also fixes a small pre-existing inconsistency: the
+ * outer wrapper's color was hardcoded as '#9AAAB8' instead of referencing
+ * TEXT_MUTED from theme.ts, even though they're the same value — the new
+ * .dash-empty-state class uses the shared --dash-text-muted variable, so
+ * this can no longer drift if the muted color ever changes.)
+ */
 export function EmptyState({ icon = '📭', title, subtitle, action }: EmptyStateProps) {
   return (
-    <div style={{ textAlign: 'center', padding: '48px 0', color: '#9AAAB8' }}>
-      <div style={{ fontSize: 40, marginBottom: 10 }}>{icon}</div>
-      <div style={{ fontSize: 15, fontWeight: 700, color: TEXT_PRIMARY, marginBottom: 4 }}>{title}</div>
-      {subtitle && <div style={{ fontSize: 13, color: TEXT_SECONDARY, marginBottom: 16 }}>{subtitle}</div>}
+    <div className="dash-empty-state">
+      <div className="dash-empty-state__icon">{icon}</div>
+      <div className="dash-empty-state__title">{title}</div>
+      {subtitle && <div className="dash-empty-state__subtitle">{subtitle}</div>}
       {action}
     </div>
   )

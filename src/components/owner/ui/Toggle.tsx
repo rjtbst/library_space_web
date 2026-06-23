@@ -7,6 +7,14 @@ interface ToggleProps {
   disabled?: boolean
 }
 
+/**
+ * Static visual treatment now lives in .dash-toggle / .dash-toggle__dot in
+ * globals.css. The dot's horizontal position genuinely depends on `on` at
+ * runtime, so it's still set inline — but via a single CSS variable
+ * (--toggle-dot-left) rather than a full style object, which keeps the
+ * "what's static vs dynamic" boundary explicit in the code. The track
+ * color is also dynamic (on/off) and stays inline for the same reason.
+ */
 export function Toggle({ on, onChange, disabled }: ToggleProps) {
   return (
     <button
@@ -14,19 +22,13 @@ export function Toggle({ on, onChange, disabled }: ToggleProps) {
       aria-checked={on}
       disabled={disabled}
       onClick={() => !disabled && onChange(!on)}
-      style={{
-        width: 36, height: 20, borderRadius: 10, border: 'none',
-        background: on ? ACCENT : '#C8D4C8',
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        position: 'relative', transition: 'background .2s', padding: 0,
-        flexShrink: 0, opacity: disabled ? 0.6 : 1,
-      }}
+      className="dash-toggle"
+      style={{ background: on ? ACCENT : '#C8D4C8' }}
     >
-      <div style={{
-        width: 14, height: 14, borderRadius: '50%', background: '#fff',
-        position: 'absolute', top: 3, left: on ? 19 : 3,
-        transition: 'left .2s', boxShadow: '0 1px 3px rgba(0,0,0,.15)',
-      }} />
+      <div
+        className="dash-toggle__dot"
+        style={{ '--toggle-dot-left': on ? '19px' : '3px' } as React.CSSProperties}
+      />
     </button>
   )
 }

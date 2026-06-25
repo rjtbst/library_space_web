@@ -9,10 +9,10 @@ import type { ActionResult } from '@/lib/actions/auth'
 const librarySchema = z.object({
   name:                z.string().min(2).max(120).trim(),
   state:               z.string().min(1).max(80).trim(),
+  description:      z.string().max(400).trim().optional(),
   city:                z.string().min(1).max(80).trim(),
   area:                z.string().min(1).max(120).trim(),
   address:             z.string().min(5).max(400).trim(),
-  total_seats:         z.number().int().positive(),
   amenity_ids:         z.array(z.string().uuid()).min(1),
   latitude:            z.number().nullable().optional(),
   longitude:           z.number().nullable().optional(),
@@ -31,7 +31,7 @@ export type LibraryForEdit = {
   city:                string
   area:                string
   address:             string
-  total_seats:         number
+  description:         string
   amenityIds:          string[]      // UUIDs
   latitude:            number | null
   longitude:           number | null
@@ -75,10 +75,10 @@ export async function getLibraryForEdit(
     id:                  lib.id,
     name:                lib.name                ?? '',
     state:               (lib as any).state      ?? '',
+    description:         (lib as any).description ?? '',
     city:                lib.city                ?? '',
     area:                lib.area                ?? '',
     address:             lib.address             ?? '',
-    total_seats:         seatCount               ?? 0,
     amenityIds,
     latitude:            lib.latitude   != null ? Number(lib.latitude)   : null,
     longitude:           lib.longitude  != null ? Number(lib.longitude)  : null,
@@ -102,8 +102,7 @@ export async function createLibrary(
   const { supabase, user } = gate
 
   const {
-    name, state, city, area, address,
-    total_seats, amenity_ids,
+    name, state, city, area, address, description, amenity_ids,
     latitude, longitude, razorpay_account_id,
   } = parsed.data
 
@@ -116,7 +115,7 @@ export async function createLibrary(
       city,
       area,
       address,
-     
+      description,
       latitude:            latitude            ?? null,
       longitude:           longitude           ?? null,
       razorpay_account_id: razorpay_account_id ?? null,
@@ -133,7 +132,7 @@ export async function createLibrary(
   const libraryId = library.id
 
   await syncAmenities(supabase, libraryId, amenity_ids)
-  await generateSeats(supabase, libraryId, total_seats)
+  
 
   return { success: true, data: { libraryId } }
 }
@@ -217,23 +216,7 @@ async function syncAmenities(
   if (linkErr) console.error('syncAmenities: insert failed', linkErr)
 }
 
-async function generateSeats(
-  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
-  libraryId: string,
-  total_seats: number,
-) {
-  const COLS  = 8
-  const seats: { library_id: string; row_label: string; column_number: number; is_active: boolean }[] = []
-  let count   = 0
-  for (let r = 0; count < total_seats; r++) {
-    const rowLabel = String.fromCharCode(65 + r)
-    for (let c = 1; c <= COLS && count < total_seats; c++) {
-      seats.push({ library_id: libraryId, row_label: rowLabel, column_number: c, is_active: true })
-      count++
-    }
-  }
-  await supabase.from('seats').insert(seats)
-}
+
 
 /* ═══════════════════════════════════════════════════════════════
    UPLOAD LIBRARY PHOTO
@@ -394,7 +377,7 @@ export async function deleteLibraryPhoto(imageId: string): Promise<ActionResult>
 export type LibrarySummary = {
   name: string; city: string; area: string
   hasAddress: boolean; 
-  totalSeats: number; photoCount: number; coverUrl: string | null
+  photoCount: number; coverUrl: string | null
 }
 
 export async function getLibraryOnboardingSummary(libraryId: string): Promise<LibrarySummary | null> {
@@ -408,9 +391,7 @@ export async function getLibraryOnboardingSummary(libraryId: string): Promise<Li
     .eq('id', libraryId).eq('owner_id', user.id).maybeSingle()
   if (!lib) return null
 
-  const { count: seatCount } = await supabase
-    .from('seats').select('*', { count: 'exact', head: true })
-    .eq('library_id', libraryId).eq('is_active', true)
+
 
   const { data: photos } = await supabase
     .from('library_images').select('image_url, is_cover')
@@ -423,7 +404,6 @@ export async function getLibraryOnboardingSummary(libraryId: string): Promise<Li
     city:       lib.city      ?? '',
     area:       lib.area      ?? '',
     hasAddress: !!(lib.address?.trim()),
-    totalSeats: seatCount  ?? 0,
     photoCount: photos?.length ?? 0,
     coverUrl:   photos?.find(p => p.is_cover)?.image_url ?? photos?.[0]?.image_url ?? null,
   }
@@ -446,11 +426,7 @@ export async function publishLibrary(libraryId: string): Promise<ActionResult> {
   if (!photoCount || photoCount === 0)
     return { success: false, error: 'Upload at least one photo before going live' }
 
-  const { count: seatCount } = await supabase
-    .from('seats').select('*', { count: 'exact', head: true })
-    .eq('library_id', libraryId).eq('is_active', true)
-  if (!seatCount || seatCount === 0)
-    return { success: false, error: 'Configure at least one seat before going live' }
+  
 
   const { error } = await supabase
     .from('libraries').update({ is_active: true } as any).eq('id', libraryId).eq('owner_id', user.id)

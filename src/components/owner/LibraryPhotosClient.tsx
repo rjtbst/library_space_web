@@ -258,7 +258,7 @@ export default function LibraryPhotosClient() {
                 </div>
               ) : cover ? (
                 <>
-                  <Image src={cover.previewUrl} alt="cover" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <img src={cover.previewUrl} alt="cover" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   <button
                     onClick={e => { e.stopPropagation(); remove(cover, false) }}
                     style={{ position: 'absolute', top: 8, right: 8, width: 28, height: 28, borderRadius: '50%', background: '#C5282C', border: 'none', color: '#fff', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}

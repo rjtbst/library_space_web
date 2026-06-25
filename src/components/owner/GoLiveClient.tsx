@@ -121,22 +121,12 @@ function PreviewCard({ summary }: { summary: LibrarySummary }) {
           📍 {summary.area ? `${summary.area}, ` : ''}{summary.city}
         </div>
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-          <div>
-            <div style={{ fontSize: 10, color: '#9AAAB8', textTransform: 'uppercase', letterSpacing: '.05em' }}>Seats</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: '#0A0D12' }}>{summary.totalSeats}</div>
-          </div>
-          <div>
-            <div style={{ fontSize: 10, color: '#9AAAB8', textTransform: 'uppercase', letterSpacing: '.05em' }}>Base price</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: '#0A0D12' }}>₹{summary.basePrice}/hr</div>
-          </div>
+          
           <div>
             <div style={{ fontSize: 10, color: '#9AAAB8', textTransform: 'uppercase', letterSpacing: '.05em' }}>Photos</div>
             <div style={{ fontSize: 14, fontWeight: 700, color: '#0A0D12' }}>{summary.photoCount}</div>
           </div>
-          <div>
-            <div style={{ fontSize: 10, color: '#9AAAB8', textTransform: 'uppercase', letterSpacing: '.05em' }}>Hours</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: '#0A0D12' }}>{summary.openTime}–{summary.closeTime}</div>
-          </div>
+         
         </div>
       </div>
     </div>
@@ -146,9 +136,9 @@ function PreviewCard({ summary }: { summary: LibrarySummary }) {
 /* ─── Types ─────────────────────────────────────────────────────────────────── */
 type LibrarySummary = {
   name: string; city: string; area: string
-  totalSeats: number; basePrice: number | null
+ 
   photoCount: number; coverUrl: string | null
-  openTime: string; closeTime: string
+ 
   hasAddress: boolean
 }
 
@@ -196,27 +186,13 @@ export default function GoLiveClient() {
       action: summary.photoCount === 0 ? 'Upload photos' : undefined,
       onAction: () => router.push(`/onboarding/library-photos?id=${libraryId}`),
     },
-    {
-      ok: summary.totalSeats > 0,
-      label: `Seats configured (${summary.totalSeats})`,
-      detail: summary.totalSeats > 0
-        ? `${summary.totalSeats} seats ready`
-        : 'No seats found — configure your floor layout',
-      action: summary.totalSeats === 0 ? 'Configure seats' : undefined,
-      onAction: () => router.push(`/owner/seat-manager?id=${libraryId}`),
-    },
-    {
-      ok: !!summary.basePrice,
-      label: 'Pricing set',
-      detail: summary.basePrice ? `₹${summary.basePrice}/hr base rate` : 'Add a base price so students can book',
-      action: !summary.basePrice ? 'Set price' : undefined,
-      onAction: () => router.push(`/onboarding/add-library?id=${libraryId}`),
-    },
+   
+   
   ] : []
 
   const allGood     = checks.every(c => c.ok)
   const criticalOk  = summary
-    ? summary.photoCount > 0 && summary.totalSeats > 0 && !!summary.name
+    ? summary.photoCount > 0 && !!summary.name
     : false
 
   const handlePublish = () => {
@@ -257,6 +233,7 @@ export default function GoLiveClient() {
             </div>
             {[
               { icon: '👥', text: 'Add staff members from your dashboard' },
+              { icon: '🪑', text: 'Add more seats and configure pricing' },
               { icon: '💳', text: 'Create membership plans for students' },
               { icon: '📊', text: 'Track bookings & revenue in real time' },
             ].map(({ icon, text }) => (

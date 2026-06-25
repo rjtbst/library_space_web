@@ -33,16 +33,17 @@ export type AmenityOption = { id: string; name: string }
 
 /* ─── Form state ────────────────────────────────────────────── */
 type FormState = {
-  name:       string
-  state:      string
-  city:       string
-  area:       string
-  address:    string
-  totalSeats: string
-  amenityIds: string[]    // UUIDs
-  lat:        number | null
-  lng:        number | null
-  razorpayId: string
+  name:        string
+  state:       string
+  city:        string
+  area:        string
+  address:     string
+  description: string
+  
+  amenityIds:  string[]    // UUIDs
+  lat:         number | null
+  lng:         number | null
+  razorpayId:  string
 }
 
 /* ─── Props ─────────────────────────────────────────────────── */
@@ -137,16 +138,17 @@ export default function AddLibraryForm({
   const buildInitialForm = useCallback((): FormState => {
     if (existingLibrary) {
       return {
-        name:       existingLibrary.name,
-        state:      existingLibrary.state,
-        city:       existingLibrary.city,
-        area:       existingLibrary.area,
-        address:    existingLibrary.address,
-        totalSeats: existingLibrary.total_seats > 0     ? String(existingLibrary.total_seats) : '',
-        amenityIds: existingLibrary.amenityIds,
-        lat:        existingLibrary.latitude,
-        lng:        existingLibrary.longitude,
-        razorpayId: existingLibrary.razorpay_account_id,
+        name:        existingLibrary.name,
+        state:       existingLibrary.state,
+        city:        existingLibrary.city,
+        area:        existingLibrary.area,
+        address:     existingLibrary.address,
+        description: existingLibrary.description ?? '',
+       
+        amenityIds:  existingLibrary.amenityIds,
+        lat:         existingLibrary.latitude,
+        lng:         existingLibrary.longitude,
+        razorpayId:  existingLibrary.razorpay_account_id,
       }
     }
 
@@ -156,34 +158,34 @@ export default function AddLibraryForm({
       if (raw) {
         const draft = JSON.parse(raw) as Partial<FormState>
         return {
-          name:       draft.name       ?? '',
-          state:      draft.state      ?? profileState ?? '',
-          city:       draft.city       ?? (draft.state === profileState ? profileCity : '') ?? '',
-          area:       draft.area       ?? '',
-          address:    draft.address    ?? '',
-         
-          totalSeats: draft.totalSeats ?? '',
-          amenityIds: draft.amenityIds ?? [],
-          lat:        draft.lat        ?? null,
-          lng:        draft.lng        ?? null,
-          razorpayId: draft.razorpayId ?? '',
+          name:        draft.name        ?? '',
+          state:       draft.state       ?? profileState ?? '',
+          city:        draft.city        ?? (draft.state === profileState ? profileCity : '') ?? '',
+          area:        draft.area        ?? '',
+          address:     draft.address     ?? '',
+          description: draft.description ?? '',
+       
+          amenityIds:  draft.amenityIds  ?? [],
+          lat:         draft.lat         ?? null,
+          lng:         draft.lng         ?? null,
+          razorpayId:  draft.razorpayId  ?? '',
         }
       }
     } catch { /* ignore */ }
 
     // No draft: pre-fill from owner profile
     return {
-      name:       '',
-      state:      profileState,
-      city:       profileCity,
-      area:       '',
-      address:    '',
-    
-      totalSeats: '',
-      amenityIds: [],
-      lat:        null,
-      lng:        null,
-      razorpayId: '',
+      name:        '',
+      state:       profileState,
+      city:        profileCity,
+      area:        '',
+      address:     '',
+      description: '',
+  
+      amenityIds:  [],
+      lat:         null,
+      lng:         null,
+      razorpayId:  '',
     }
   }, [existingLibrary, profileState, profileCity])
 
@@ -217,20 +219,27 @@ export default function AddLibraryForm({
         : [...form.amenityIds, id],
     })
 
-  /* ── Validation — all fields required except lat/lng and razorpayId ── */
-  const valid =
-    form.name.trim().length >= 2 &&
-    !!form.state &&
-    !!form.city &&
-    form.area.trim().length >= 1 &&
-    form.address.trim().length >= 5 &&
+  /* ── Validation — compute missing fields for user feedback ── */
+  type MissingField = { key: string; label: string }
+  const missingFields: MissingField[] = []
+  if (form.name.trim().length < 2)       missingFields.push({ key: 'name',        label: 'Library name (min 2 chars)' })
+  if (!form.state)                        missingFields.push({ key: 'state',       label: 'State' })
+  if (!form.city)                         missingFields.push({ key: 'city',        label: 'City' })
+  if (form.area.trim().length < 1)        missingFields.push({ key: 'area',        label: 'Area / Locality' })
+  if (form.address.trim().length < 5)     missingFields.push({ key: 'address',     label: 'Full address (min 5 chars)' })
+  if (!form.lat || !form.lng)             missingFields.push({ key: 'location',    label: 'Pin location on map' })
+  
+  if (form.amenityIds.length === 0)       missingFields.push({ key: 'amenities',   label: 'At least one amenity' })
+  const valid = missingFields.length === 0
 
-    !!form.totalSeats &&
-    form.amenityIds.length > 0
+  /* Track whether user has attempted submit (to show warnings) */
+  const [attempted, setAttempted] = useState(false)
 
   /* ── Submit ── */
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+    setAttempted(true)
+    if (!valid) return
     setError('')
     startTransition(async () => {
       const payload = {
@@ -239,8 +248,7 @@ export default function AddLibraryForm({
         city:                form.city,
         area:                form.area.trim(),
         address:             form.address.trim(),
-
-        total_seats:         parseInt(form.totalSeats, 10),
+        description:         form.description.trim() || null,
         amenity_ids:         form.amenityIds,
         latitude:            form.lat,
         longitude:           form.lng,
@@ -250,7 +258,7 @@ export default function AddLibraryForm({
       const res = isEditing
         ? await updateLibrary(libraryId!, payload)
         : await createLibrary(payload)
-
+  console.log("response ", res)
       if (res.success === false) { setError(res.error); return }
 
       try { localStorage.removeItem(DRAFT_KEY) } catch { /* ignore */ }
@@ -308,6 +316,16 @@ export default function AddLibraryForm({
               />
             </Field>
 
+              {/* Description */}
+            <Field label="Library description" hint="Brief intro shown to students on your listing page.">
+              <textarea
+                placeholder="e.g. A quiet, air-conditioned study space with high-speed WiFi and individual desks."
+                value={form.description} onChange={e => patch({ description: e.target.value })}
+                rows={3} style={{ ...inpBase, resize: 'vertical', minHeight: 80 }}
+                onFocus={onFocus as any} onBlur={onBlur as any}
+              />
+            </Field>
+
             {/* State + City */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <Field label="State" required>
@@ -356,7 +374,7 @@ export default function AddLibraryForm({
               />
             </Field>
 
-            {/* Address */}
+            {/* Full address */}
             <Field label="Full address" required>
               <textarea
                 placeholder="Shop No., Street, Landmark"
@@ -366,11 +384,16 @@ export default function AddLibraryForm({
               />
             </Field>
 
-            {/* Location picker — optional */}
+          
+
+          
+
+            {/* Location picker — required for Near Me search */}
             <div style={{ marginBottom: 16 }}>
               <label style={{ fontSize: 12, fontWeight: 600, color: '#3A4A5C', display: 'block', marginBottom: 6 }}>
                 Pin location on map
-                <span style={{ color: '#9AAAB8', fontWeight: 400, marginLeft: 4 }}>(optional)</span>
+                <span style={{ color: ACCENT, marginLeft: 2 }}>*</span>
+                <span style={{ color: '#9AAAB8', fontWeight: 400, marginLeft: 4, fontSize: 11 }}>(enables Near Me search for students)</span>
               </label>
               <LocationPicker
                 lat={form.lat} lng={form.lng}
@@ -433,6 +456,32 @@ export default function AddLibraryForm({
 
             <div style={{ height: 1, background: '#E2DDD4', margin: '8px 0 20px' }} />
 
+            {/* Validation warnings — shown after first submit attempt or if any field has been touched */}
+            {attempted && !valid && (
+              <div style={{
+                background: '#FFFBEB', border: '1px solid rgba(217,119,6,.25)',
+                borderRadius: 10, padding: '12px 14px', marginBottom: 16,
+              }}>
+                <p style={{ fontSize: 12, fontWeight: 700, color: '#92400E', margin: '0 0 8px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  ⚠️ Complete these fields to continue:
+                </p>
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {missingFields.map(f => (
+                    <li key={f.key} style={{ fontSize: 12, color: '#B45309', marginBottom: 3 }}>
+                      {f.label}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Always-visible subtle hint when button is disabled and not yet attempted */}
+            {!attempted && !valid && (
+              <p style={{ fontSize: 11, color: '#9AAAB8', textAlign: 'center', marginBottom: 12 }}>
+                Fill in all required fields (<span style={{ color: ACCENT }}>*</span>) to enable Save &amp; Continue
+              </p>
+            )}
+
             {/* Error banner */}
             {error && (
               <div style={{
@@ -458,7 +507,9 @@ export default function AddLibraryForm({
                 ← Back
               </button>
               <button
-                type="submit" disabled={!valid || isPending}
+                type="submit"
+                onClick={() => { if (!valid) setAttempted(true) }}
+                disabled={isPending}
                 style={{
                   flex: 2, padding: '13px 0', borderRadius: 10, fontSize: 15, fontWeight: 700,
                   fontFamily: 'Syne, sans-serif', border: 'none',

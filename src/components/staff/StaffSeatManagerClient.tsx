@@ -99,7 +99,11 @@ export default function StaffSeatManagerClient({
    * page refresh. See hooks/useSeatLayoutRealtime.ts for why this
    * re-fetches rather than patching the changed row directly. */
   const refreshSeats = useCallback(() => {
+    // TEMP DIAGNOSTIC LOGGING — remove once the realtime gap is found.
+    console.log('[StaffSeatManagerClient] refreshSeats called, fetching getSeniorSeatLayout for', libraryId)
     getSeniorSeatLayout(libraryId).then((fresh) => {
+      console.log('[StaffSeatManagerClient] getSeniorSeatLayout returned', fresh.length, 'seats. Booked/held seats:',
+        fresh.filter(s => s.live_status === 'booked' || s.live_status === 'held'))
       setSeats(fresh)
       // Keep the open side panel in sync if it's showing the seat that
       // just changed, without auto-closing it on the staff member.

@@ -405,6 +405,10 @@ export async function staffCheckIn(bookingId: string): Promise<ActionResult> {
   log('staffCheckIn', `booking=${bookingId} by staff=${user.id}`)
   revalidatePath('/staff')
   revalidatePath('/staff/bookings')
+  revalidatePath('/staff/seat-manager')
+  // Owner seat manager also shows checked-in status
+  revalidatePath('/dashboard/seat-manager')
+  revalidatePath('/dashboard')
   return { success: true, data: undefined }
 }
 

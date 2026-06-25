@@ -116,11 +116,17 @@ export type SlotDisplayOption = {
  * library-detail page. `finalPrice` is the exact ₹/hr rate that
  * lib/booking/pricing.ts will apply to a booking starting in this slot —
  * keeping the preview and the actual charge in sync.
+ *
+ * Midnight end: a slot whose end is "00:00" runs until end-of-day.
+ * We display this as "12:00 AM" with a "(midnight)" suffix to distinguish
+ * it from a hypothetical slot that starts at midnight.
  */
 export function slotToDisplayOption(slot: SlotConfig): SlotDisplayOption {
+  const endMins  = timeToMinutes(slot.end)
+  const endLabel = endMins === 0 ? '12:00 AM (midnight)' : formatTime12h(slot.end)
   return {
     id:         slot.id,
-    label:      `${formatTime12h(slot.start)} – ${formatTime12h(slot.end)}`,
+    label:      `${formatTime12h(slot.start)} – ${endLabel}`,
     days:       daysDisplay(slot.days),
     basePrice:  slot.price,
     discount:   slot.discount,

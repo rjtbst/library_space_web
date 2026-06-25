@@ -8,11 +8,12 @@ import { cancelBooking } from '@/lib/actions/student'
 import type { StudentBooking } from '@/lib/actions/student'
 import {
   Calendar, MapPin, Tag, CheckCircle2, XCircle,
-  Clock3, Ban, AlertCircle, ChevronRight,
+  Clock3, Ban, AlertCircle, ChevronRight, QrCode,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { fmtIST, fmtISTTime } from '@/lib/ist'
+import { BookingQRModal } from './BookingQRCode'
 
 const STATUS: Record<string, { label: string; cls: string; Icon: typeof CheckCircle2 }> = {
   confirmed:  { label: 'Confirmed',   cls: 'bg-[#D1FAE5] text-[#0D7C54]',  Icon: CheckCircle2 },
@@ -25,9 +26,11 @@ const STATUS: Record<string, { label: string; cls: string; Icon: typeof CheckCir
 function BookingCard({
   booking,
   onCancel,
+  onShowQR,
 }: {
   booking:  StudentBooking
   onCancel: (id: string) => void
+  onShowQR: (booking: StudentBooking) => void
 }) {
   const cfg         = STATUS[booking.status] ?? STATUS.completed
   const StatusIcon  = cfg.Icon
@@ -35,6 +38,7 @@ function BookingCard({
   const canCancel   =
     ['confirmed', 'held'].includes(booking.status) &&
     startMs - Date.now() > 30 * 60_000
+  const canShowQR   = ['confirmed', 'checked_in'].includes(booking.status)
 
   return (
     <div className="bg-white rounded-xl border border-[#E4EAF2] overflow-hidden">
@@ -94,15 +98,27 @@ function BookingCard({
         </div>
       </div>
 
-      {canCancel && (
-        <div className="border-t border-[#F4F7FB] px-4 py-2.5 flex justify-end">
-          <button
-            onClick={() => onCancel(booking.id)}
-            className="flex items-center gap-1.5 text-[11px] text-[#C5282C] hover:bg-[#FEE2E2] px-3 py-1.5 rounded-lg transition-colors"
-          >
-            <Ban className="w-3 h-3" />
-            Cancel Booking
-          </button>
+      {(canCancel || canShowQR) && (
+        <div className="border-t border-[#F4F7FB] px-4 py-2.5 flex items-center justify-between gap-2">
+          {canShowQR ? (
+            <button
+              onClick={() => onShowQR(booking)}
+              className="flex items-center gap-1.5 text-[11px] text-[#1246FF] hover:bg-[#E8EFFE] px-3 py-1.5 rounded-lg transition-colors"
+            >
+              <QrCode className="w-3 h-3" />
+              Show QR / Check-in
+            </button>
+          ) : <span />}
+
+          {canCancel && (
+            <button
+              onClick={() => onCancel(booking.id)}
+              className="flex items-center gap-1.5 text-[11px] text-[#C5282C] hover:bg-[#FEE2E2] px-3 py-1.5 rounded-lg transition-colors"
+            >
+              <Ban className="w-3 h-3" />
+              Cancel Booking
+            </button>
+          )}
         </div>
       )}
 
@@ -129,6 +145,7 @@ export default function BookingsClient({
   const [isPending, startTransition] = useTransition()
   const [tab, setTab]       = useState<'upcoming' | 'past'>('upcoming')
   const [cancelling, setCancelling] = useState<string | null>(null)
+  const [qrBooking, setQrBooking] = useState<StudentBooking | null>(null)
 
   function handleCancel(id: string) {
     if (!confirm('Are you sure you want to cancel this booking? This cannot be undone.')) return
@@ -208,10 +225,19 @@ export default function BookingsClient({
               key={b.id}
               className={cn(cancelling === b.id && 'opacity-50 pointer-events-none')}
             >
-              <BookingCard booking={b} onCancel={handleCancel} />
+              <BookingCard booking={b} onCancel={handleCancel} onShowQR={setQrBooking} />
             </div>
           ))}
         </div>
+      )}
+
+      {qrBooking && (
+        <BookingQRModal
+          bookingId={qrBooking.id}
+          libraryName={qrBooking.library_name}
+          seatLabel={qrBooking.seat_label}
+          onClose={() => setQrBooking(null)}
+        />
       )}
     </div>
   )

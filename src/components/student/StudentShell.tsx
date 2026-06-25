@@ -15,11 +15,12 @@ import { usePathname, useRouter } from 'next/navigation'
 import { createBrowserSupabaseClient } from '@/lib/supabase/client'
 import {
   BookOpen, Building2, Map, CalendarDays, CreditCard,
-  Receipt, Library, Package, Bell, User, LogOut,
+  Receipt, Library, Package, User, LogOut,
   Menu, X, ChevronRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getInitials, avatarGradient } from '@/lib/utils'
+import NotificationBell from './NotificationBell'
 
 const NAV_ITEMS = [
   { href: '/explore',        icon: Building2,    label: 'Find Libraries'    },
@@ -37,7 +38,6 @@ export default function StudentShell({ children }: { children: React.ReactNode }
   const router   = useRouter()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [userMeta,    setUserMeta]    = useState<UserMeta | null>(null)
-  const [unread,      setUnread]      = useState(0)
 
   useEffect(() => {
     const supabase = createBrowserSupabaseClient()
@@ -179,12 +179,7 @@ export default function StudentShell({ children }: { children: React.ReactNode }
             {currentLabel}
           </span>
           <div className="ml-auto flex gap-2">
-            <button className="relative w-9 h-9 rounded-[9px] bg-[#F4F7FB] border-[1.5px] border-[#E4EAF2] flex items-center justify-center text-[#6E7F94] hover:bg-[#E8EDF5] hover:border-[#B8C4D4] transition-all">
-              <Bell className="w-[15px] h-[15px]" />
-              {unread > 0 && (
-                <span className="absolute top-1 right-1 w-[7px] h-[7px] rounded-full bg-red-500 border-2 border-white" />
-              )}
-            </button>
+            <NotificationBell />
           </div>
         </header>
 

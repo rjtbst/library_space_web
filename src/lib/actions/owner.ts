@@ -504,7 +504,7 @@ export async function getSeatLayout(libraryId: string): Promise<SeatRow[]> {
         .from('bookings')
         .select(`
           id, seat_id, status, booking_mode,
-          start_time, end_time,
+          start_time, end_time, hold_expires_at,
           guest_name, guest_phone, user_id,
           users(full_name, phone)
         `)
@@ -516,8 +516,18 @@ export async function getSeatLayout(libraryId: string): Promise<SeatRow[]> {
 
     if (!seatsRes.data?.length) return []
 
+    const nowMs = new Date(now).getTime()
+
     const bookingBySeat = new Map<string, any>()
     for (const b of bookingsRes.data ?? []) {
+      // Option B: treat a held booking whose hold window has expired as if it
+      // doesn't exist — the seat shows free immediately without needing a cron.
+      // The DB EXCLUDE constraint still prevents any actual double-booking at
+      // write time, so this is purely a UI accuracy fix.
+      if (b.status === 'held' && b.hold_expires_at) {
+        const expiresMs = new Date(b.hold_expires_at).getTime()
+        if (expiresMs < nowMs) continue   // skip — treat as free
+      }
       if (!bookingBySeat.has(b.seat_id)) bookingBySeat.set(b.seat_id, b)
     }
 
@@ -785,6 +795,9 @@ export async function manualBookSeat(
   revalidatePath('/dashboard')
   revalidatePath('/dashboard/bookings')
   revalidatePath('/dashboard/seat-manager')
+  // Staff views must also see the new booking
+  revalidatePath('/staff/seat-manager')
+  revalidatePath('/staff')
   return { success: true, data: { bookingId: booking.id } }
 }
 
@@ -856,6 +869,8 @@ export async function extendBooking(
   log('extendBooking', `booking=${bookingId} extended to ${newEndTime}`)
   revalidatePath('/dashboard/seat-manager')
   revalidatePath('/dashboard')
+  revalidatePath('/staff/seat-manager')
+  revalidatePath('/staff')
   return { success: true, data: undefined }
 }
 
@@ -898,6 +913,9 @@ export async function forceFreeSeat(
   revalidatePath('/dashboard')
   revalidatePath('/dashboard/bookings')
   revalidatePath('/dashboard/seat-manager')
+  // Staff seat manager must also see the freed seat
+  revalidatePath('/staff/seat-manager')
+  revalidatePath('/staff')
   return { success: true, data: { cancelledBookingId: bookingId } }
 }
 

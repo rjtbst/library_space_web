@@ -2,36 +2,36 @@
 'use client'
 
 /**
- * Complete three-step student booking flow.
+ * Three-step student booking flow.
  *
  * Step 1 — Pick a slot + set start/end time (live price preview).
- * Step 2 — Choose a seat from the real SeatGrid (fetched after Step 1).
+ * Step 2 — Choose a seat from the real SeatGrid (live realtime, auto-refreshes
+ *           when any booking changes for this library).
  * Step 3 — Confirm summary → Razorpay checkout → confirmBookingPayment.
  *
- * FIX (midnight-closing slots): a slot ending at midnight is stored as
- * "00:00", which timeToMinutes() reads as 0 — not 1440. Every previous
- * version of this file called timeToMinutes(slot.end) directly, so a slot
- * like 09:00–00:00 ("open till midnight") was treated as ending at minute 0
- * of the SAME day, making every time after 00:00 (including the entire
- * evening) appear to be "past the slot end" and disabling those times in
- * the <input type="time"> max attribute and in validateTimes(). This file
- * introduces effectiveSlotEndMinutes(), which treats a slot end of exactly
- * "00:00" as 1440 (i.e. end-of-day / midnight), and uses it everywhere a
- * slot boundary comparison happens — both for validation and for the time
- * input min/max attributes that the browser uses to restrict picking.
+ * Key fixes in this version:
  *
- * All server actions called here are the EXISTING ones from
- * lib/actions/student.ts — no new actions were added:
- *   • getBookingPricePreview  — live ₹ preview while user picks time
- *   • getSeatAvailability      — seats for chosen window (Step 2)
- *   • initiateBooking          — creates HELD booking + Razorpay order
- *   • confirmBookingPayment    — verifies signature → confirms booking
+ * 1. AM/PM TIME PICKER — replaced <input type="time"> (renders 24h on many
+ *    Indian Android devices) with a custom Hour / Minute / AM-PM select trio.
+ *    All values are converted to/from "HH:MM" for internal state so nothing
+ *    downstream changes.
  *
- * Time convention: all inputs to server actions are plain IST strings
- * ("YYYY-MM-DDTHH:mm") as expected by inputToDB() in student.ts.
+ * 2. DEFAULT TIME GUARD — if the current time is so close to slot end that
+ *    start + 2h would overflow (producing a < 30 min window that immediately
+ *    fails validation), we back up the start so the default window is always
+ *    at least 1 hour and ends on or before the slot boundary.
  *
- * Props are supplied by the server page at
- * app/(student)/library/[id]/book/seat/page.tsx.
+ * 3. REALTIME SEAT REFRESH — while the student is on Step 2, a Supabase
+ *    realtime subscription re-fetches seat availability whenever any booking
+ *    changes for this library. This prevents selecting a seat that was just
+ *    taken by another student.
+ *
+ * 4. CLEAR ERROR MESSAGES — all validation errors are shown inline next to
+ *    the relevant field, not only at the bottom. The CTA shows a loading
+ *    state while the price preview is calculating.
+ *
+ * 5. MIDNIGHT-CLOSING SLOTS — a slot stored as end "00:00" means midnight
+ *    (end of day). effectiveSlotEndMinutes() treats it as 1440 everywhere.
  */
 
 import { useState, useCallback, useTransition, useEffect, useRef } from 'react'
@@ -51,6 +51,7 @@ import {
 } from 'lucide-react'
 import SeatGrid from './SeatGrid'
 import { useRazorpay } from '@/hooks/userazorpay'
+import { createBrowserSupabaseClient } from '@/lib/supabase/client'
 import {
   getBookingPricePreview,
   getSeatAvailability,
@@ -122,27 +123,155 @@ function todayIST(): string {
 }
 
 /**
- * Slot end, in minutes-since-midnight, treating "00:00" as END OF DAY
- * (1440) rather than the start of the day. A slot stored as
- * { start: "09:00", end: "00:00" } means "9 AM to midnight" (15 hours),
- * not "9 AM to 9 AM" or an inverted/zero-length range.
- *
- * Only "00:00" exactly is treated this way — a slot that genuinely starts
- * AND ends at midnight (zero-length) would be rejected by slot validation
- * on the owner side already, so this never collides with a legitimate
- * same-time slot.
+ * Slot end in minutes-since-midnight, treating "00:00" as END OF DAY (1440).
+ * A slot stored as { start: "09:00", end: "00:00" } means "9 AM to midnight".
  */
 function effectiveSlotEndMinutes(slot: SlotConfig): number {
   const endMins = timeToMinutes(slot.end)
   return endMins === 0 ? 1440 : endMins
 }
 
-/** Minutes since midnight → "HH:MM", clamped to 23:59 for display in <input type="time"> (which can't represent 24:00). */
-function minsToTimeInput(mins: number): string {
+/** Minutes → "HH:MM", clamped to 23:59 (can't represent 24:00 in an input). */
+function minsToHHMM(mins: number): string {
   const clamped = Math.min(mins, 23 * 60 + 59)
-  const h = Math.floor(clamped / 60)
-  const m = clamped % 60
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+  return `${String(Math.floor(clamped / 60)).padStart(2, '0')}:${String(clamped % 60).padStart(2, '0')}`
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   AM/PM Time Picker
+   Renders as Hour (1–12) + free-entry Minute (00–59) + AM/PM.
+   Value in/out is "HH:MM" 24h format for compatibility with all other logic.
+   Backend validation (slotBoundaryValidation.ts) already accepts any
+   minute value — this picker used to artificially restrict input to
+   :00/:15/:30/:45 via a <select>. Minute is now a free-typed numeric field
+   so a student can pick e.g. 9:07 or 9:41, matching what the server allows.
+───────────────────────────────────────────────────────────────────────── */
+
+interface TimePickerProps {
+  value:       string          // "HH:MM" 24h
+  onChange:    (v: string) => void
+  minMins?:    number          // minutes-since-midnight lower bound (inclusive)
+  maxMins?:    number          // minutes-since-midnight upper bound (inclusive)
+  disabled?:   boolean
+  id?:         string
+}
+
+function TimePicker({ value, onChange, minMins, maxMins, disabled, id }: TimePickerProps) {
+  const totalMins = value ? timeToMinutes(value) : 0
+  const h24  = Math.floor(totalMins / 60)
+  const mins = totalMins % 60
+  const isPM = h24 >= 12
+  const h12  = h24 % 12 || 12
+
+  // Local text state for the minute field so the user can freely type/clear
+  // digits without each keystroke being clamped mid-edit (e.g. typing "07"
+  // shouldn't get force-corrected after the first "0"). Clamping happens
+  // onBlur and whenever the value changes from outside (hour/period change).
+  const [minuteText, setMinuteText] = useState(String(mins).padStart(2, '0'))
+  useEffect(() => {
+    setMinuteText(String(mins).padStart(2, '0'))
+  }, [mins])
+
+  function emit(newH24: number, newMins: number) {
+    onChange(minsToHHMM(newH24 * 60 + newMins))
+  }
+
+  function handleHour(h: number) {
+    const newH24 = (h % 12) + (isPM ? 12 : 0)
+    emit(newH24, mins)
+  }
+
+  function commitMinute(raw: string) {
+    const parsed = parseInt(raw, 10)
+    const clamped = isNaN(parsed) ? 0 : Math.min(59, Math.max(0, parsed))
+    emit(h24, clamped)
+    setMinuteText(String(clamped).padStart(2, '0'))
+  }
+
+  function handlePeriod(period: 'AM' | 'PM') {
+    const newH24 = (h12 % 12) + (period === 'PM' ? 12 : 0)
+    emit(newH24, mins)
+  }
+
+  const selStyle = [
+    'bg-white border border-[#DDE4EE] rounded-lg px-2 py-2 text-[13px] font-semibold',
+    'text-[#0D1117] outline-none focus:border-[#1E5CFF] transition-colors',
+    disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer',
+  ].join(' ')
+
+  const minuteInputStyle = [
+    'bg-white border border-[#DDE4EE] rounded-lg px-2 py-2 text-[13px] font-semibold',
+    'text-[#0D1117] outline-none focus:border-[#1E5CFF] transition-colors',
+    'w-[44px] text-center tabular-nums',
+    disabled ? 'opacity-50 cursor-not-allowed' : '',
+  ].join(' ')
+
+  // Determine which hour options are within min/max bounds
+  function isHourDisabled(h: number) {
+    if (minMins === undefined && maxMins === undefined) return false
+    const h24test = (h % 12) + (isPM ? 12 : 0)
+    const loMins  = h24test * 60
+    const hiMins  = h24test * 60 + 59
+    if (minMins !== undefined && hiMins < minMins) return true
+    if (maxMins !== undefined && loMins > maxMins) return true
+    return false
+  }
+
+  return (
+    <div className="flex items-center gap-1.5" id={id}>
+      {/* Hour */}
+      <select
+        value={h12}
+        disabled={disabled}
+        onChange={e => handleHour(Number(e.target.value))}
+        className={selStyle}
+        aria-label="Hour"
+      >
+        {Array.from({ length: 12 }, (_, i) => i + 1).map(h => (
+          <option key={h} value={h} disabled={isHourDisabled(h)}>
+            {h}
+          </option>
+        ))}
+      </select>
+
+      <span className="text-[#9AACBE] font-bold text-[13px]">:</span>
+
+      {/* Minute — free entry 00-59, not restricted to quarter-hours */}
+      <input
+        type="text"
+        inputMode="numeric"
+        pattern="[0-9]*"
+        maxLength={2}
+        value={minuteText}
+        disabled={disabled}
+        onChange={e => {
+          const digitsOnly = e.target.value.replace(/[^0-9]/g, '').slice(0, 2)
+          setMinuteText(digitsOnly)
+          // Live-commit once we have a plausible value so price preview /
+          // validation react as the user types, without fighting the
+          // cursor on a single-digit intermediate state like "0".
+          if (digitsOnly !== '' && Number(digitsOnly) <= 59) {
+            emit(h24, Number(digitsOnly))
+          }
+        }}
+        onBlur={e => commitMinute(e.target.value)}
+        className={minuteInputStyle}
+        aria-label="Minute (0-59)"
+      />
+
+      {/* AM / PM */}
+      <select
+        value={isPM ? 'PM' : 'AM'}
+        disabled={disabled}
+        onChange={e => handlePeriod(e.target.value as 'AM' | 'PM')}
+        className={selStyle}
+        aria-label="AM or PM"
+      >
+        <option value="AM">AM</option>
+        <option value="PM">PM</option>
+      </select>
+    </div>
+  )
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -241,6 +370,8 @@ export default function BookSeatClient({
   const [seatsLoading, setSeatsLoading] = useState(false)
   const [selectedSeatId, setSelectedSeatId] = useState<string | null>(null)
   const [step2Error, setStep2Error]     = useState<string>('')
+  // Track the range for realtime re-fetch
+  const step2RangeRef = useRef<{ startIST: string; endIST: string } | null>(null)
 
   /* ── Step 3 state ── */
   const [step3Error, setStep3Error]     = useState<string>('')
@@ -251,37 +382,94 @@ export default function BookSeatClient({
   const effectiveRate = selectedSlot ? effectiveSlotRate(selectedSlot) : 0
   const selectedSeat  = seats.find((s) => s.id === selectedSeatId) ?? null
 
-  // Slot boundaries in minutes — using effectiveSlotEndMinutes so a slot
-  // ending at "00:00" (midnight) is treated as minute 1440, not minute 0.
+  // Slot boundaries in minutes — midnight-aware
   const slotStartMins = selectedSlot ? timeToMinutes(selectedSlot.start) : 0
   const slotEndMins   = selectedSlot ? effectiveSlotEndMinutes(selectedSlot) : 24 * 60
 
   /* ─── Initialise start/end from slot defaults when slot changes ─── */
   useEffect(() => {
     if (!selectedSlot) return
-    // Default start = now if today + inside the slot, else slot start.
-    // Default end = start + 2h, capped at slot end.
-    const nowIST = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' })
+
+    const nowIST  = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' })
     const nowDate = nowIST.slice(0, 10)
     const nowMins = (() => {
       const [, time] = nowIST.split(' ')
-      const [h, m] = time.split(':').map(Number)
+      const [h, m]   = time.split(':').map(Number)
       return h * 60 + m
     })()
 
+    // Default start: now (rounded up to next 15 min) if we're inside the slot today,
+    // otherwise slot start
     let defaultStartMins = slotStartMins
     if (selectedDate === nowDate && nowMins > slotStartMins && nowMins < slotEndMins) {
-      // Round up to next 5-minute mark so the default isn't already "in the past" by the time they submit
-      defaultStartMins = Math.ceil(nowMins / 5) * 5
+      defaultStartMins = Math.ceil(nowMins / 15) * 15
     }
 
-    const defaultEndMins = Math.min(defaultStartMins + 120, slotEndMins)
+    // Default end: start + 2h, capped at slot end
+    let defaultEndMins = Math.min(defaultStartMins + 120, slotEndMins)
 
-    setStartTime(minsToTimeInput(defaultStartMins))
-    setEndTime(minsToTimeInput(defaultEndMins))
+    // Guard: if the resulting window is < 60 min (e.g. we're near slot end),
+    // back up start so user has at least a 60-min default window to work with.
+    // validateTimes() requires 30 min minimum; 60 min gives comfortable headroom.
+    if (defaultEndMins - defaultStartMins < 60) {
+      defaultStartMins = Math.max(slotStartMins, defaultEndMins - 60)
+    }
+
+    // Final guard: if STILL can't fit 30 min (tiny slot), use slot boundaries
+    if (defaultEndMins - defaultStartMins < 30) {
+      defaultStartMins = slotStartMins
+      defaultEndMins   = slotEndMins
+    }
+
+    const newStart = minsToHHMM(defaultStartMins)
+    const newEnd   = minsToHHMM(defaultEndMins)
+
+    setStartTime(newStart)
+    setEndTime(newEnd)
     setStep1Error('')
     setPricePreview(null)
-  }, [selectedSlotId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Auto-trigger price preview with default times so the CTA is ready on first load
+    // Use setTimeout(0) to run after the state updates are batched and committed
+    setTimeout(() => {
+      refreshPreview(selectedSlot, selectedDate, newStart, newEnd)
+    }, 0)
+  }, [selectedSlotId, selectedDate]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ─── Realtime: re-fetch seats while on Step 2 ─── */
+  useEffect(() => {
+    if (step !== 2) return
+
+    const supabase = createBrowserSupabaseClient()
+    const channel  = supabase
+      .channel(`book-seat-avail-${library.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'bookings', filter: `library_id=eq.${library.id}` },
+        () => {
+          const range = step2RangeRef.current
+          if (!range) return
+          // Re-fetch availability so a seat just taken by someone else goes red
+          getSeatAvailability(library.id, range.startIST, range.endIST).then((fresh) => {
+            setSeats(fresh)
+            // If the seat the student selected was just taken, deselect it
+            // and show a clear message so they pick another one
+            setSelectedSeatId((prev) => {
+              if (!prev) return null
+              const stillAvail = fresh.find((s) => s.id === prev)?.is_available
+              if (!stillAvail) {
+                setStep2Error('Your selected seat was just taken. Please choose another seat.')
+                return null
+              }
+              return prev
+            })
+          })
+        },
+      )
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [step, library.id])
 
   /* ─── Client-side time validation ─── */
   const validateTimes = useCallback((
@@ -296,25 +484,23 @@ export default function BookSeatClient({
     const startMins = timeToMinutes(start)
     let   endMins   = timeToMinutes(end)
     const slotStart = timeToMinutes(slot.start)
-    const slotEnd    = effectiveSlotEndMinutes(slot)
+    const slotEnd   = effectiveSlotEndMinutes(slot)
 
-    // If the picker's "end" is exactly "00:00" the user means midnight
-    // (end of day), since <input type="time"> can't represent 24:00.
+    // "00:00" from the picker means midnight (end of day)
     if (endMins === 0) endMins = 1440
 
     if (endMins <= startMins)     return 'End time must be after start time'
-    if (endMins - startMins < 30) return 'Minimum booking duration is 30 minutes'
-    if (startMins < slotStart)    return `Start time must be on or after ${formatTime12h(slot.start)} for this slot`
-    if (endMins   > slotEnd)      return `Booking must end by ${slotEnd === 1440 ? '12:00 AM' : formatTime12h(slot.end)} for this slot`
+    if (endMins - startMins < 30) return 'Minimum booking is 30 minutes'
+    if (startMins < slotStart)    return `Start must be at or after ${formatTime12h(slot.start)} for this slot`
+    if (endMins   > slotEnd)      return `Booking must end by ${slotEnd === 1440 ? '12:00 AM' : formatTime12h(slot.end)}`
 
-    // Past-time check (5-min grace same as server)
-    const startIST = `${date}T${start}`
-    const startMs  = new Date(startIST + '+05:30').getTime()
+    // 5-min grace window so a booking for "right now" still works
+    const startMs = new Date(`${date}T${start}+05:30`).getTime()
     if (startMs < Date.now() - 5 * 60_000) return 'Start time cannot be in the past'
     return ''
   }, [])
 
-  /* ─── Live price preview (debounced) ─── */
+  /* ─── Live price preview (debounced 500ms) ─── */
   const previewTimer = useRef<ReturnType<typeof setTimeout>>()
 
   const refreshPreview = useCallback((
@@ -330,19 +516,12 @@ export default function BookSeatClient({
 
     previewTimer.current = setTimeout(async () => {
       setPreviewLoading(true)
-      // If end is "00:00" it means midnight — push the date forward a day
-      // for the server call so end_time > start_time, matching how the
-      // server's own validateBooking/findContainingSlot treats same-day
-      // ranges (the slot's day-of-week is keyed off the START time).
       const endMins = timeToMinutes(end)
       const endDateForServer = endMins === 0
         ? new Date(new Date(date + 'T00:00:00+05:30').getTime() + 86_400_000)
             .toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' }).slice(0, 10)
         : date
-
-      const startIST = `${date}T${start}`
-      const endIST   = `${endDateForServer}T${end}`
-      const res = await getBookingPricePreview(library.id, startIST, endIST)
+      const res = await getBookingPricePreview(library.id, `${date}T${start}`, `${endDateForServer}T${end}`)
       setPreviewLoading(false)
       if (res.success === false) {
         setStep1Error(res.error)
@@ -351,7 +530,7 @@ export default function BookSeatClient({
         setPricePreview({ amount: res.data.amount, hourlyRate: res.data.hourlyRate })
         setStep1Error('')
       }
-    }, 600)
+    }, 500)
   }, [library.id, validateTimes])
 
   /* ─── Handlers ─── */
@@ -376,7 +555,7 @@ export default function BookSeatClient({
     refreshPreview(selectedSlot, val, startTime, endTime)
   }
 
-  /** Resolve the "YYYY-MM-DDTHH:mm" pair to send to the server, handling the midnight-end edge case. */
+  /** Build the IST range strings for server actions, handling midnight end. */
   function resolveServerRange(): { startIST: string; endIST: string } {
     const endMins = timeToMinutes(endTime)
     const endDateForServer = endMins === 0
@@ -397,10 +576,11 @@ export default function BookSeatClient({
     setStep2Error('')
     setStep(2)
 
-    // Fetch real seat availability for the EXACT chosen window
+    const range = resolveServerRange()
+    step2RangeRef.current = range   // used by realtime handler
+
     setSeatsLoading(true)
-    const { startIST, endIST } = resolveServerRange()
-    getSeatAvailability(library.id, startIST, endIST).then((data) => {
+    getSeatAvailability(library.id, range.startIST, range.endIST).then((data) => {
       setSeats(data)
       setSeatsLoading(false)
     })
@@ -408,7 +588,7 @@ export default function BookSeatClient({
 
   /* ─── Step 2 → Step 3 ─── */
   function goToStep3() {
-    if (!selectedSeatId) { setStep2Error('Please select a seat'); return }
+    if (!selectedSeatId) { setStep2Error('Please select a seat to continue'); return }
     setStep3Error('')
     setStep(3)
   }
@@ -422,7 +602,6 @@ export default function BookSeatClient({
     const { startIST, endIST } = resolveServerRange()
 
     startTransition(async () => {
-      // 1. Initiate booking (creates HELD booking + Razorpay order)
       const initRes = await initiateBooking({
         libraryId: library.id,
         seatId:    selectedSeatId,
@@ -436,9 +615,26 @@ export default function BookSeatClient({
         return
       }
 
-      const { bookingId, amount, razorpayOrderId, razorpayKeyId, libraryName } = initRes.data
+      const { bookingId, amount, razorpayOrderId, razorpayKeyId, libraryName, testMode } = initRes.data
 
-      // 2. Open Razorpay checkout
+      // ── TEST_MODE: skip Razorpay, confirm directly with synthetic IDs ──
+      if (testMode) {
+        console.log('[TEST_MODE] Bypassing Razorpay checkout, confirming booking directly')
+        const confirmRes = await confirmBookingPayment({
+          bookingId,
+          razorpayOrderId:   razorpayOrderId,
+          razorpayPaymentId: `test_pay_${Date.now()}`,
+          razorpaySignature: 'test_signature_bypass',
+        })
+        if (confirmRes.success === false) {
+          setStep3Error(confirmRes.error)
+          setPayLoading(false)
+          return
+        }
+        router.push(`/library/${library.id}/book/confirm?booking=${bookingId}`)
+        return
+      }
+
       openCheckout({
         orderId:     razorpayOrderId,
         keyId:       razorpayKeyId,
@@ -451,7 +647,6 @@ export default function BookSeatClient({
           phone: profile?.phone ?? '',
         },
         onSuccess: async (paymentId, orderId, signature) => {
-          // 3. Confirm on server
           const confirmRes = await confirmBookingPayment({
             bookingId,
             razorpayOrderId:   orderId,
@@ -465,16 +660,10 @@ export default function BookSeatClient({
             return
           }
 
-          // 4. Navigate to confirmation page
           router.push(`/library/${library.id}/book/confirm?booking=${bookingId}`)
         },
-        onDismiss: () => {
-          setPayLoading(false)
-        },
-        onError: (errMsg) => {
-          setStep3Error(errMsg)
-          setPayLoading(false)
-        },
+        onDismiss: () => { setPayLoading(false) },
+        onError:   (errMsg) => { setStep3Error(errMsg); setPayLoading(false) },
       })
     })
   }
@@ -486,17 +675,16 @@ export default function BookSeatClient({
     else if (step === 3) { setStep(2); setStep3Error('') }
   }
 
-  /* ─── Duration in hours (display) ─── */
+  /* ─── Duration display ─── */
   const durationH = startTime && endTime
     ? (() => {
         const sm = timeToMinutes(startTime)
-        let em = timeToMinutes(endTime)
-        if (em === 0) em = 1440 // midnight-end
+        let em   = timeToMinutes(endTime)
+        if (em === 0) em = 1440
         return (em - sm) / 60
       })()
     : 0
 
-  /* ─── Today string for date min ─── */
   const today = todayIST()
 
   /* ═══════════════════════════════════════════════════════════════════════
@@ -536,7 +724,7 @@ export default function BookSeatClient({
         <StepBar current={step} />
       </div>
 
-      {/* ────────────────────── STEP 1: Slot & Time ────────────────────── */}
+      {/* ─────────────────── STEP 1: Slot & Time ─────────────────── */}
       {step === 1 && (
         <div className="flex-1 px-4 py-5 space-y-5 max-w-lg mx-auto w-full">
 
@@ -547,8 +735,8 @@ export default function BookSeatClient({
             </p>
             <div className="space-y-2">
               {slots.map((slot) => {
-                const rate    = effectiveSlotRate(slot)
-                const active  = slot.id === selectedSlotId
+                const rate     = effectiveSlotRate(slot)
+                const active   = slot.id === selectedSlotId
                 const endLabel = effectiveSlotEndMinutes(slot) === 1440 ? '12:00 AM' : formatTime12h(slot.end)
                 return (
                   <button
@@ -598,7 +786,7 @@ export default function BookSeatClient({
             <div className="bg-white border border-[#DDE4EE] rounded-xl overflow-hidden divide-y divide-[#F0F4F8]">
 
               {/* Date */}
-              <label className="flex items-center gap-3 px-4 py-3 cursor-pointer">
+              <div className="flex items-center gap-3 px-4 py-3">
                 <Calendar className="w-4 h-4 text-[#9AACBE] flex-shrink-0" />
                 <span className="text-[12px] text-[#9AACBE] w-14 flex-shrink-0">Date</span>
                 <input
@@ -606,50 +794,47 @@ export default function BookSeatClient({
                   value={selectedDate}
                   min={today}
                   onChange={(e) => handleDateChange(e.target.value)}
-                  className="flex-1 text-[13px] font-medium text-[#0D1117] bg-transparent outline-none"
+                  className="flex-1 text-[13px] font-medium text-[#0D1117] bg-transparent outline-none cursor-pointer"
                 />
-              </label>
+              </div>
 
-              {/* Start time — min/max use slotStartMins/slotEndMins (midnight-aware) */}
-              <label className="flex items-center gap-3 px-4 py-3 cursor-pointer">
+              {/* Start time */}
+              <div className="flex items-center gap-3 px-4 py-3 flex-wrap sm:flex-nowrap">
                 <Clock className="w-4 h-4 text-[#9AACBE] flex-shrink-0" />
                 <span className="text-[12px] text-[#9AACBE] w-14 flex-shrink-0">Start</span>
-                <input
-                  type="time"
-                  value={startTime}
-                  min={selectedSlot ? selectedSlot.start : '00:00'}
-                  max={selectedSlot ? minsToTimeInput(slotEndMins - 30) : '23:30'}
-                  onChange={(e) => handleStartChange(e.target.value)}
-                  className="flex-1 text-[13px] font-medium text-[#0D1117] bg-transparent outline-none"
-                />
+                <div className="flex-1">
+                  <TimePicker
+                    value={startTime}
+                    onChange={handleStartChange}
+                    minMins={slotStartMins}
+                    maxMins={slotEndMins - 30}
+                  />
+                </div>
                 {selectedSlot && (
-                  <span className="text-[10px] text-[#9AACBE] flex-shrink-0">
+                  <span className="text-[10px] text-[#9AACBE] flex-shrink-0 ml-auto sm:ml-0">
                     from {formatTime12h(selectedSlot.start)}
                   </span>
                 )}
-              </label>
+              </div>
 
-              {/* End time — min/max use slotStartMins/slotEndMins (midnight-aware);
-                  note the <input type="time"> can't natively represent "24:00", so
-                  a slot ending at midnight shows max="23:59" here and we treat a
-                  literal "00:00" end value as midnight in validateTimes/resolveServerRange. */}
-              <label className="flex items-center gap-3 px-4 py-3 cursor-pointer">
+              {/* End time */}
+              <div className="flex items-center gap-3 px-4 py-3 flex-wrap sm:flex-nowrap">
                 <Clock className="w-4 h-4 text-[#9AACBE] flex-shrink-0" />
                 <span className="text-[12px] text-[#9AACBE] w-14 flex-shrink-0">End</span>
-                <input
-                  type="time"
-                  value={endTime}
-                  min={startTime ? minsToTimeInput(timeToMinutes(startTime) + 30) : (selectedSlot?.start ?? '00:30')}
-                  max={slotEndMins === 1440 ? '23:59' : minsToTimeInput(slotEndMins)}
-                  onChange={(e) => handleEndChange(e.target.value)}
-                  className="flex-1 text-[13px] font-medium text-[#0D1117] bg-transparent outline-none"
-                />
+                <div className="flex-1">
+                  <TimePicker
+                    value={endTime}
+                    onChange={handleEndChange}
+                    minMins={startTime ? timeToMinutes(startTime) + 30 : slotStartMins + 30}
+                    maxMins={slotEndMins === 1440 ? 1439 : slotEndMins}
+                  />
+                </div>
                 {selectedSlot && (
-                  <span className="text-[10px] text-[#9AACBE] flex-shrink-0">
+                  <span className="text-[10px] text-[#9AACBE] flex-shrink-0 ml-auto sm:ml-0">
                     by {slotEndMins === 1440 ? '12:00 AM' : formatTime12h(selectedSlot.end)}
                   </span>
                 )}
-              </label>
+              </div>
             </div>
           </div>
 
@@ -662,7 +847,7 @@ export default function BookSeatClient({
               <div>
                 <div className="text-[11px] text-[#6E7F94]">Estimated total</div>
                 {previewLoading
-                  ? <div className="mt-1 h-5 w-24 rounded-md bg-[#DDE4EE] animate-pulse" />
+                  ? <div className="mt-1 h-4 w-32 rounded-md bg-[#DDE4EE] animate-pulse" />
                   : pricePreview
                     ? (
                       <div className="text-[11px] text-[#9AACBE] mt-0.5">
@@ -685,20 +870,22 @@ export default function BookSeatClient({
           <button
             type="button"
             onClick={goToStep2}
-            disabled={!!step1Error || !pricePreview || previewLoading}
+            disabled={!!step1Error || !startTime || !endTime || previewLoading || (!pricePreview && !step1Error)}
             className="w-full py-3.5 rounded-xl bg-[#1E5CFF] text-white text-[14px] font-bold flex items-center justify-center gap-2 shadow-[0_4px_20px_rgba(30,92,255,.3)] hover:bg-[#1447D4] transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
           >
-            Check Seat Availability
-            <ArrowRight className="w-4 h-4" />
+            {previewLoading
+              ? <><Loader2 className="w-4 h-4 animate-spin" /> Calculating price…</>
+              : <>Check Seat Availability <ArrowRight className="w-4 h-4" /></>
+            }
           </button>
         </div>
       )}
 
-      {/* ────────────────────── STEP 2: Pick Seat ────────────────────── */}
+      {/* ─────────────────── STEP 2: Pick Seat ─────────────────── */}
       {step === 2 && (
         <div className="flex-1 px-4 py-5 max-w-lg mx-auto w-full space-y-4">
 
-          {/* Time summary pill */}
+          {/* Time summary pills */}
           <div className="flex items-center gap-2 flex-wrap">
             <span className="inline-flex items-center gap-1.5 bg-white border border-[#DDE4EE] rounded-full px-3 py-1 text-[12px] font-medium text-[#3A4A5C]">
               <Calendar className="w-3.5 h-3.5 text-[#9AACBE]" />
@@ -714,6 +901,12 @@ export default function BookSeatClient({
                 ₹{pricePreview.amount}
               </span>
             )}
+          </div>
+
+          {/* Live update badge */}
+          <div className="flex items-center gap-1.5 text-[11px] text-[#0D7C54]">
+            <span className="w-2 h-2 rounded-full bg-[#0D7C54] animate-pulse" />
+            Seat map updates live — auto-refreshes if someone else books
           </div>
 
           <p className="text-[11px] font-semibold text-[#9AACBE] uppercase tracking-widest">
@@ -734,7 +927,7 @@ export default function BookSeatClient({
             <ErrorBox msg="No seats are configured for this library yet. Please contact the library." />
           )}
           {!seatsLoading && seats.length > 0 && seats.every((s) => !s.is_available) && (
-            <ErrorBox msg="All seats are booked for this exact time window. Try a different time." />
+            <ErrorBox msg="All seats are booked for this time. Try a different time or date." />
           )}
 
           {step2Error && <ErrorBox msg={step2Error} />}
@@ -778,7 +971,7 @@ export default function BookSeatClient({
         </div>
       )}
 
-      {/* ────────────────────── STEP 3: Confirm & Pay ────────────────────── */}
+      {/* ─────────────────── STEP 3: Confirm & Pay ─────────────────── */}
       {step === 3 && (
         <div className="flex-1 px-4 py-5 max-w-lg mx-auto w-full space-y-4">
 
@@ -789,13 +982,13 @@ export default function BookSeatClient({
           {/* Summary card */}
           <div className="bg-white border border-[#DDE4EE] rounded-xl overflow-hidden divide-y divide-[#F0F4F8]">
             {[
-              { icon: MapPin,    label: 'Library', value: `${library.name}` },
-              { icon: MapPin,    label: 'Address', value: `${library.area}, ${library.city}` },
-              { icon: Armchair,  label: 'Seat',    value: selectedSeat?.label ?? '—' },
-              { icon: Calendar,  label: 'Date',    value: fmtDate(`${selectedDate}T${startTime}`) },
-              { icon: Clock,     label: 'Time',    value: `${fmt12h(startTime)} – ${timeToMinutes(endTime) === 0 ? '12:00 AM' : fmt12h(endTime)}` },
-              { icon: Clock,     label: 'Duration',value: `${durationH.toFixed(1)} hrs` },
-              { icon: Tag,       label: 'Slot rate',value: `₹${effectiveRate}/hr` },
+              { icon: MapPin,   label: 'Library',  value: library.name },
+              { icon: MapPin,   label: 'Address',  value: `${library.area}, ${library.city}` },
+              { icon: Armchair, label: 'Seat',     value: selectedSeat?.label ?? '—' },
+              { icon: Calendar, label: 'Date',     value: fmtDate(`${selectedDate}T${startTime}`) },
+              { icon: Clock,    label: 'Time',     value: `${fmt12h(startTime)} – ${timeToMinutes(endTime) === 0 ? '12:00 AM' : fmt12h(endTime)}` },
+              { icon: Clock,    label: 'Duration', value: `${durationH.toFixed(1)} hrs` },
+              { icon: Tag,      label: 'Slot rate',value: `₹${effectiveRate}/hr` },
             ].map(({ icon: Icon, label, value }) => (
               <div key={label} className="flex items-center gap-3 px-4 py-3">
                 <Icon className="w-4 h-4 text-[#9AACBE] flex-shrink-0" />

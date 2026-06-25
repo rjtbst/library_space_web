@@ -99,7 +99,11 @@ export default function SeatManagerClient({
    * hooks/useSeatLayoutRealtime.ts for why this re-fetches rather than
    * patching the changed row directly. */
   const refreshSeats = useCallback(() => {
+    // TEMP DIAGNOSTIC LOGGING — remove once the realtime gap is found.
+    console.log('[SeatManagerClient] refreshSeats called, fetching getSeatLayout for', libraryId)
     getSeatLayout(libraryId).then((fresh) => {
+      console.log('[SeatManagerClient] getSeatLayout returned', fresh.length, 'seats. Booked/held seats:',
+        fresh.filter(s => s.live_status === 'booked' || s.live_status === 'held'))
       setSeats(fresh)
       // If the seat the owner currently has open in the side panel changed
       // (e.g. someone else just booked it), update the panel to match —

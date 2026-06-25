@@ -51,9 +51,15 @@ export function useSeatLayoutRealtime(libraryId: string, onChange: () => void) {
     const supabase = createBrowserSupabaseClient()
     let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
-    const scheduleRefetch = () => {
+    const scheduleRefetch = (payload?: unknown) => {
+      // TEMP DIAGNOSTIC LOGGING — remove once the realtime gap is found.
+      // This proves whether the event is received at all, and exactly when.
+      console.log('[useSeatLayoutRealtime] event received for library', libraryId, payload)
       if (debounceTimer) clearTimeout(debounceTimer)
-      debounceTimer = setTimeout(() => onChangeRef.current(), DEBOUNCE_MS)
+      debounceTimer = setTimeout(() => {
+        console.log('[useSeatLayoutRealtime] firing debounced refetch for library', libraryId)
+        onChangeRef.current()
+      }, DEBOUNCE_MS)
     }
 
     // Channel name must be unique per library so two seat-manager views for
@@ -71,7 +77,12 @@ export function useSeatLayoutRealtime(libraryId: string, onChange: () => void) {
         },
         scheduleRefetch,
       )
-      .subscribe()
+      .subscribe((status, err) => {
+        // TEMP DIAGNOSTIC LOGGING — confirms the channel actually subscribed
+        // successfully. If this never logs "SUBSCRIBED", the channel itself
+        // failed (auth, network, or Realtime not enabled for this project).
+        console.log('[useSeatLayoutRealtime] channel status for library', libraryId, status, err ?? '')
+      })
 
     return () => {
       if (debounceTimer) clearTimeout(debounceTimer)

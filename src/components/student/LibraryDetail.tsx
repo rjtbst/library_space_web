@@ -1,24 +1,68 @@
 // components/student/LibraryDetail.tsx
 'use client'
 
-import { useState } from 'react'
-import Link          from 'next/link'
+/**
+ * Library detail page — UNIFIED FLOW.
+ *
+ * Replaces the old "click CTA → navigate to /book/seat → 3-step wizard" path.
+ *
+ * New experience:
+ *   1. Open Library Detail page
+ *   2. See live seat map immediately (fetches availability for current slot)
+ *   3. Pick a seat inline — no page navigation
+ *   4. Pick time (start/end within the slot)
+ *   5. Instant price preview
+ *   6. Book — Razorpay opens OR test-mode skips to confirmation
+ *
+ * Architecture:
+ *   - LibraryDetail is 'use client'. Server-fetched data (library, slots,
+ *     plans, freeSeats, status, activeSub) flows in as props.
+ *   - Seat availability is fetched client-side on mount and re-fetched
+ *     whenever the selected slot or time window changes (debounced 600ms).
+ *   - Supabase realtime subscription on bookings table keeps the seat map
+ *     live — any booking change by another student instantly re-fetches.
+ *   - The old multi-page BookSeatClient (/book/seat) still works for direct
+ *     URL access. This page replaces the entry flow only.
+ */
+
+import {
+  useState, useCallback, useEffect, useRef, useTransition,
+} from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
   ArrowLeft, Star, MapPin, Clock, Wifi, Wind, Volume2, Zap,
   Car, Coffee, ChevronLeft, ChevronRight, Users, Calendar,
-  Zap as Flash,
+  Zap as Flash, CreditCard, Loader2, AlertCircle, ArrowRight,
+  Tag, CheckCircle, Armchair,
 } from 'lucide-react'
 import {
   type SlotConfig,
   type SlotDisplayOption,
   slotToDisplayOption,
   effectiveSlotRate,
+  formatTime12h,
+  timeToMinutes,
 } from '@/lib/booking/types'
 import type { LibraryStatus } from '@/lib/booking/libraryStatus'
-import Image from 'next/image'
+import { createBrowserSupabaseClient } from '@/lib/supabase/client'
+import {
+  getBookingPricePreview,
+  getSeatAvailability,
+  initiateBooking,
+  confirmBookingPayment,
+  type SeatAvailability,
+  type StudentProfile,
+} from '@/lib/actions/student'
+import { useRazorpay } from '@/hooks/userazorpay'
+import SeatGrid from './SeatGrid'
 
-type Plan = { id: string; name: string; price: number; duration_days: number; session_limit: string | null }
+/* ─── Types ─────────────────────────────────────────────────────────────── */
+
+type Plan = {
+  id: string; name: string; price: number
+  duration_days: number; session_limit: string | null
+}
 type Library = {
   id: string; name: string; description: string | null
   city: string; area: string; address: string
@@ -30,59 +74,520 @@ const AMENITY_ICONS: Record<string, React.ElementType> = {
   WiFi: Wifi, AC: Wind, 'Quiet Zone': Volume2, 'Power Sockets': Zap, Parking: Car, Cafe: Coffee,
 }
 const PLAN_COLORS = ['#0597A7', '#1E5CFF', '#6B3FD4', '#0A7C5C', '#C96A00']
-const GRADS = ['linear-gradient(135deg,#E0E8FF,#C7D4F7)', 'linear-gradient(135deg,#D4EDD4,#B8DDB8)', 'linear-gradient(135deg,#F0E8FF,#DDD0F7)']
+const GRADS = [
+  'linear-gradient(135deg,#E0E8FF,#C7D4F7)',
+  'linear-gradient(135deg,#D4EDD4,#B8DDB8)',
+  'linear-gradient(135deg,#F0E8FF,#DDD0F7)',
+]
 
-/**
- * SLOT-ONLY ARCHITECTURE — header / sticky-CTA price.
- *
- * No single base_price exists anymore. The "from ₹X/hr" figure shown in the
- * header and sticky CTA is the lowest effective rate across all of TODAY's
- * active slots — i.e. the cheapest rate a student could actually book today.
- * If the library is currently open, the CURRENT slot's rate is shown
- * instead (labelled "Now"), since that's the rate a booking starting right
- * now would actually receive (lib/booking/pricing.ts).
- */
-function headerPrice(status: LibraryStatus, allSlots: SlotConfig[]): { label: string; rate: number } | null {
+/* ─── Helper ─────────────────────────────────────────────────────────────── */
+
+function headerPrice(
+  status: LibraryStatus,
+  allSlots: SlotConfig[],
+): { label: string; rate: number } | null {
   const active = allSlots.filter((s) => s.is_active)
   if (active.length === 0) return null
-
   if (status.isOpen && status.currentSlot) {
     return { label: 'Now', rate: effectiveSlotRate(status.currentSlot) }
   }
-
   const lowest = [...active].sort((a, b) => effectiveSlotRate(a) - effectiveSlotRate(b))[0]
   return { label: 'From', rate: effectiveSlotRate(lowest) }
 }
 
+/** Today in IST as YYYY-MM-DD */
+function todayIST(): string {
+  return new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' }).slice(0, 10)
+}
+
+/** Minutes → HH:MM, clamped to 23:59 */
+function minsToHHMM(mins: number): string {
+  const clamped = Math.min(mins, 23 * 60 + 59)
+  return `${String(Math.floor(clamped / 60)).padStart(2, '0')}:${String(clamped % 60).padStart(2, '0')}`
+}
+
+/** Slot end treating 00:00 as end-of-day (1440 min) */
+function effectiveSlotEndMins(slot: SlotConfig): number {
+  const e = timeToMinutes(slot.end)
+  return e === 0 ? 1440 : e
+}
+
+/** fmt 24h → 9:00 AM */
+function fmt12h(t: string): string {
+  const [h, m] = t.split(':').map(Number)
+  const a = h >= 12 ? 'PM' : 'AM'
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${a}`
+}
+
+/* ─── TimePicker ─────────────────────────────────────────────────────────── */
+/* Minute is a free-entry numeric field (0-59), not a fixed-interval select.
+   Backend validation (slotBoundaryValidation.ts) already accepts any minute
+   value — this picker used to artificially restrict input to
+   :00/:15/:30/:45. Removing that restriction lets a student pick e.g.
+   9:07 or 9:41, matching what the server allows. */
+
+function TimePicker({
+  value, onChange, minMins, maxMins, disabled, label,
+}: {
+  value: string; onChange: (v: string) => void
+  minMins?: number; maxMins?: number
+  disabled?: boolean; label: string
+}) {
+  const totalMins = value ? timeToMinutes(value) : 0
+  const h24  = Math.floor(totalMins / 60)
+  const mins = totalMins % 60
+  const isPM = h24 >= 12
+  const h12  = h24 % 12 || 12
+
+  // Local text buffer for the minute field so typing isn't clamped
+  // mid-keystroke. Synced from the authoritative `mins` whenever it
+  // changes from outside (hour/period edits, external value changes).
+  const [minuteText, setMinuteText] = useState(String(mins).padStart(2, '0'))
+  useEffect(() => {
+    setMinuteText(String(mins).padStart(2, '0'))
+  }, [mins])
+
+  function emit(newH24: number, newMins: number) {
+    onChange(minsToHHMM(newH24 * 60 + newMins))
+  }
+
+  function commitMinute(raw: string) {
+    const parsed = parseInt(raw, 10)
+    const clamped = isNaN(parsed) ? 0 : Math.min(59, Math.max(0, parsed))
+    emit(h24, clamped)
+    setMinuteText(String(clamped).padStart(2, '0'))
+  }
+
+  const selCls = [
+    'bg-[#F4F7FB] border border-[#DDE4EE] rounded-lg px-2 py-2',
+    'text-[13px] font-semibold text-[#0D1117] outline-none',
+    'focus:border-[#1E5CFF] focus:bg-white transition-colors',
+    disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer',
+  ].join(' ')
+
+  const minuteInputCls = [
+    'bg-[#F4F7FB] border border-[#DDE4EE] rounded-lg px-2 py-2',
+    'text-[13px] font-semibold text-[#0D1117] outline-none',
+    'focus:border-[#1E5CFF] focus:bg-white transition-colors',
+    'w-[44px] text-center tabular-nums',
+    disabled ? 'opacity-50 cursor-not-allowed' : '',
+  ].join(' ')
+
+  const isHourDis = (h: number) => {
+    if (minMins === undefined && maxMins === undefined) return false
+    const h24t = (h % 12) + (isPM ? 12 : 0)
+    if (minMins !== undefined && h24t * 60 + 59 < minMins) return true
+    if (maxMins !== undefined && h24t * 60 > maxMins) return true
+    return false
+  }
+
+  return (
+    <div>
+      <label className="text-[11px] font-semibold text-[#6E7F94] uppercase tracking-wider block mb-1.5">
+        {label}
+      </label>
+      <div className="flex items-center gap-1.5">
+        <select
+          value={h12}
+          disabled={disabled}
+          onChange={(e) => emit((Number(e.target.value) % 12) + (isPM ? 12 : 0), mins)}
+          className={selCls}
+          aria-label="Hour"
+        >
+          {Array.from({ length: 12 }, (_, i) => i + 1).map((h) => (
+            <option key={h} value={h} disabled={isHourDis(h)}>{h}</option>
+          ))}
+        </select>
+        <span className="text-[#9AACBE] font-bold text-[13px]">:</span>
+        <input
+          type="text"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          maxLength={2}
+          value={minuteText}
+          disabled={disabled}
+          onChange={(e) => {
+            const digitsOnly = e.target.value.replace(/[^0-9]/g, '').slice(0, 2)
+            setMinuteText(digitsOnly)
+            if (digitsOnly !== '' && Number(digitsOnly) <= 59) {
+              emit(h24, Number(digitsOnly))
+            }
+          }}
+          onBlur={(e) => commitMinute(e.target.value)}
+          className={minuteInputCls}
+          aria-label="Minute (0-59)"
+        />
+        <select
+          value={isPM ? 'PM' : 'AM'}
+          disabled={disabled}
+          onChange={(e) => {
+            const period = e.target.value as 'AM' | 'PM'
+            emit((h12 % 12) + (period === 'PM' ? 12 : 0), mins)
+          }}
+          className={selCls}
+          aria-label="AM or PM"
+        >
+          <option value="AM">AM</option>
+          <option value="PM">PM</option>
+        </select>
+      </div>
+    </div>
+  )
+}
+
+/* ─── ErrorBox ─────────────────────────────────────────────────────────── */
+
+function ErrorBox({ msg }: { msg: string }) {
+  return (
+    <div className="flex items-start gap-2 bg-[#FFF0F0] border border-[#FCA5A5] rounded-xl px-3 py-2.5 text-[12px] text-[#C5282C]">
+      <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+      <span>{msg}</span>
+    </div>
+  )
+}
+
+/* ─── Main component ────────────────────────────────────────────────────── */
+
 export default function LibraryDetail({
-  library, ownerSlots, plans, freeSeats, status, activeSub,
+  library,
+  ownerSlots,
+  plans,
+  freeSeats,
+  status,
+  activeSub,
+  profile,
 }: {
   library:    Library
-  /** ALL slot configs (active + inactive) for the library — used for both
-   *  the "Available Time Slots" list (active only, via slotToDisplayOption)
-   *  and the header/CTA price (headerPrice, above). */
   ownerSlots: SlotConfig[]
   plans:      Plan[]
   freeSeats:  number
-  /** From lib/booking/libraryStatus.ts — single source of truth for
-   *  open/closed and "today's hours" display. Replaces isOpen/openHours. */
   status:     LibraryStatus
   activeSub:  { planName: string; endDate: string } | null
+  profile:    StudentProfile | null
 }) {
-  const router  = useRouter()
+  const router = useRouter()
+  const { openCheckout } = useRazorpay()
+  const [isPending, startTransition] = useTransition()
+
   const [imgIdx, setImgIdx] = useState(0)
 
-  const activeSlots = ownerSlots.filter((s) => s.is_active)
-  const slotOptions: SlotDisplayOption[] = activeSlots.map(slotToDisplayOption)
-  const price = headerPrice(status, ownerSlots)
-  const isOpen = status.isOpen
+  // ── Booking panel state ──────────────────────────────────────────────────
+  const [bookingOpen,    setBookingOpen]    = useState(false)
+  const [selectedSlotId, setSelectedSlotId] = useState<string>('')
+  const [selectedDate,   setSelectedDate]   = useState<string>(todayIST())
+  const [startTime,      setStartTime]      = useState<string>('')
+  const [endTime,        setEndTime]        = useState<string>('')
+  const [pricePreview,   setPricePreview]   = useState<{ amount: number; hourlyRate: number } | null>(null)
+  const [timeError,      setTimeError]      = useState<string>('')
+  const [previewLoading, setPreviewLoading] = useState(false)
+
+  // Seat state
+  const [seats,          setSeats]          = useState<SeatAvailability[]>([])
+  const [seatsLoading,   setSeatsLoading]   = useState(false)
+  const [selectedSeatId, setSelectedSeatId] = useState<string | null>(null)
+  const [seatError,      setSeatError]      = useState<string>('')
+  const step2RangeRef = useRef<{ startIST: string; endIST: string } | null>(null)
+
+  // Pay state
+  const [payLoading, setPayLoading] = useState(false)
+  const [payError,   setPayError]   = useState<string>('')
+
+  const activeSlots   = ownerSlots.filter((s) => s.is_active)
+  const slotOptions   = activeSlots.map(slotToDisplayOption)
+  const price         = headerPrice(status, ownerSlots)
+  const isOpen        = status.isOpen
+  const hasAnySlots   = activeSlots.length > 0
+  const selectedSlot  = activeSlots.find((s) => s.id === selectedSlotId) ?? null
+  const slotStartMins = selectedSlot ? timeToMinutes(selectedSlot.start) : 0
+  const slotEndMins   = selectedSlot ? effectiveSlotEndMins(selectedSlot) : 24 * 60
+  const selectedSeat  = seats.find((s) => s.id === selectedSeatId) ?? null
+
+  // Duration
+  const durationH = startTime && endTime
+    ? (() => {
+        const sm = timeToMinutes(startTime)
+        let em   = timeToMinutes(endTime)
+        if (em === 0) em = 1440
+        return (em - sm) / 60
+      })()
+    : 0
+
+  /* ── Init slot selection ─────────────────────────────────────────────── */
+  useEffect(() => {
+    if (activeSlots.length > 0 && !selectedSlotId) {
+      setSelectedSlotId(activeSlots[0].id)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── Init times when slot / date changes ─────────────────────────────── */
+  useEffect(() => {
+    if (!selectedSlot) return
+
+    const nowIST  = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' })
+    const nowDate = nowIST.slice(0, 10)
+    const [, time] = nowIST.split(' ')
+    const [h, m]   = time.split(':').map(Number)
+    const nowMins  = h * 60 + m
+
+    let defStart = slotStartMins
+    if (selectedDate === nowDate && nowMins > slotStartMins && nowMins < slotEndMins) {
+      defStart = Math.ceil(nowMins / 15) * 15
+    }
+    let defEnd = Math.min(defStart + 120, slotEndMins)
+
+    if (defEnd - defStart < 60) defStart = Math.max(slotStartMins, defEnd - 60)
+    if (defEnd - defStart < 30) { defStart = slotStartMins; defEnd = slotEndMins }
+
+    const newStart = minsToHHMM(defStart)
+    const newEnd   = minsToHHMM(defEnd)
+    setStartTime(newStart)
+    setEndTime(newEnd)
+    setTimeError('')
+    setPricePreview(null)
+
+    // Auto-preview with default times
+    setTimeout(() => refreshPreview(selectedSlot, selectedDate, newStart, newEnd), 0)
+  }, [selectedSlotId, selectedDate]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── Open booking panel: fetch seats ────────────────────────────────── */
+  useEffect(() => {
+    if (!bookingOpen || !selectedSlot || !startTime || !endTime) return
+    fetchSeats()
+  }, [bookingOpen]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── Re-fetch seats when time window changes (debounced) ────────────── */
+  const seatsDebounceRef = useRef<ReturnType<typeof setTimeout>>()
+  useEffect(() => {
+    if (!bookingOpen || !selectedSlot || !startTime || !endTime) return
+    clearTimeout(seatsDebounceRef.current)
+    seatsDebounceRef.current = setTimeout(fetchSeats, 600)
+    return () => clearTimeout(seatsDebounceRef.current)
+  }, [startTime, endTime, selectedSlotId, selectedDate]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── Realtime seat sync ──────────────────────────────────────────────── */
+  useEffect(() => {
+    if (!bookingOpen) return
+
+    const supabase = createBrowserSupabaseClient()
+    const channel  = supabase
+      .channel(`lib-detail-seats-${library.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'bookings', filter: `library_id=eq.${library.id}` },
+        () => {
+          const range = step2RangeRef.current
+          if (!range) return
+          getSeatAvailability(library.id, range.startIST, range.endIST).then((fresh) => {
+            setSeats(fresh)
+            setSelectedSeatId((prev) => {
+              if (!prev) return null
+              const ok = fresh.find((s) => s.id === prev)?.is_available
+              if (!ok) {
+                setSeatError('Your selected seat was just taken. Please choose another.')
+                return null
+              }
+              return prev
+            })
+          })
+        },
+      )
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [bookingOpen, library.id])
+
+  /* ── Helpers ─────────────────────────────────────────────────────────── */
+
+  function resolveRange(): { startIST: string; endIST: string } {
+    const endMins = timeToMinutes(endTime)
+    const endDateForServer = endMins === 0
+      ? new Date(new Date(selectedDate + 'T00:00:00+05:30').getTime() + 86_400_000)
+          .toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' }).slice(0, 10)
+      : selectedDate
+    return { startIST: `${selectedDate}T${startTime}`, endIST: `${endDateForServer}T${endTime}` }
+  }
+
+  function validateTimes(): string {
+    if (!selectedSlot) return 'Please select a slot'
+    if (!startTime || !endTime) return 'Please set both start and end time'
+    const sm = timeToMinutes(startTime)
+    let   em = timeToMinutes(endTime)
+    if (em === 0) em = 1440
+    if (em <= sm)         return 'End time must be after start time'
+    if (em - sm < 30)     return 'Minimum booking is 30 minutes'
+    if (sm < slotStartMins) return `Start must be at or after ${formatTime12h(selectedSlot.start)}`
+    if (em > slotEndMins)   return `Must end by ${slotEndMins === 1440 ? '12:00 AM' : formatTime12h(selectedSlot.end)}`
+    const startMs = new Date(`${selectedDate}T${startTime}+05:30`).getTime()
+    if (startMs < Date.now() - 5 * 60_000) return 'Start time cannot be in the past'
+    return ''
+  }
+
+  const previewTimer = useRef<ReturnType<typeof setTimeout>>()
+  const refreshPreview = useCallback((
+    slot: SlotConfig | null,
+    date: string,
+    start: string,
+    end: string,
+  ) => {
+    clearTimeout(previewTimer.current)
+    if (!slot || !start || !end) return
+    const sm = timeToMinutes(start)
+    let   em = timeToMinutes(end)
+    if (em === 0) em = 1440
+    if (em - sm < 30) { setPricePreview(null); return }
+
+    previewTimer.current = setTimeout(async () => {
+      setPreviewLoading(true)
+      const endMins = timeToMinutes(end)
+      const endDate = endMins === 0
+        ? new Date(new Date(date + 'T00:00:00+05:30').getTime() + 86_400_000)
+            .toLocaleString('sv-SE', { timeZone: 'Asia/Kolkata' }).slice(0, 10)
+        : date
+      const res = await getBookingPricePreview(library.id, `${date}T${start}`, `${endDate}T${end}`)
+      setPreviewLoading(false)
+      if (res.success === false) {
+        setTimeError(res.error)
+        setPricePreview(null)
+      } else {
+        setPricePreview({ amount: res.data.amount, hourlyRate: res.data.hourlyRate })
+        setTimeError('')
+      }
+    }, 500)
+  }, [library.id])
+
+  function fetchSeats() {
+    if (!startTime || !endTime || !selectedSlot) return
+    const err = validateTimes()
+    if (err) return
+    const range = resolveRange()
+    step2RangeRef.current = range
+    setSeatsLoading(true)
+    setSelectedSeatId(null)
+    getSeatAvailability(library.id, range.startIST, range.endIST).then((data) => {
+      setSeats(data)
+      setSeatsLoading(false)
+    })
+  }
+
+  function handleSlotChange(id: string) {
+    setSelectedSlotId(id)
+    setSelectedSeatId(null)
+    setPayError('')
+  }
+
+  function handleStartChange(val: string) {
+    setStartTime(val)
+    setSelectedSeatId(null)
+    const err = validateTimes()
+    setTimeError(err)
+    refreshPreview(selectedSlot, selectedDate, val, endTime)
+  }
+
+  function handleEndChange(val: string) {
+    setEndTime(val)
+    setSelectedSeatId(null)
+    const err = validateTimes()
+    setTimeError(err)
+    refreshPreview(selectedSlot, selectedDate, startTime, val)
+  }
+
+  function handleDateChange(val: string) {
+    setSelectedDate(val)
+    setSelectedSeatId(null)
+  }
+
+  function handlePay() {
+    const err = validateTimes()
+    if (err) { setPayError(err); return }
+    if (!selectedSeatId) { setPayError('Please select a seat'); return }
+    if (!pricePreview)   { setPayError('Price not yet calculated — please wait'); return }
+
+    setPayLoading(true)
+    setPayError('')
+
+    const { startIST, endIST } = resolveRange()
+
+    startTransition(async () => {
+      const initRes = await initiateBooking({
+        libraryId: library.id,
+        seatId:    selectedSeatId,
+        startTime: startIST,
+        endTime:   endIST,
+      })
+
+      if (initRes.success === false) {
+        setPayError(initRes.error)
+        setPayLoading(false)
+        return
+      }
+
+      const { bookingId, amount, razorpayOrderId, razorpayKeyId, libraryName, testMode } = initRes.data
+
+      // TEST_MODE: bypass Razorpay, confirm directly
+      if (testMode) {
+        console.log('[TEST_MODE] Direct confirmation without Razorpay')
+        const confirmRes = await confirmBookingPayment({
+          bookingId,
+          razorpayOrderId,
+          razorpayPaymentId: `test_pay_${Date.now()}`,
+          razorpaySignature: 'test_signature_bypass',
+        })
+        if (confirmRes.success === false) {
+          setPayError(confirmRes.error)
+          setPayLoading(false)
+          return
+        }
+        router.push(`/library/${library.id}/book/confirm?booking=${bookingId}`)
+        return
+      }
+
+      openCheckout({
+        orderId:     razorpayOrderId,
+        keyId:       razorpayKeyId,
+        amount,
+        name:        libraryName,
+        description: `Seat ${selectedSeat?.label ?? ''} · ${startIST.slice(11)} – ${endIST.slice(11)}`,
+        prefill: {
+          name:  profile?.full_name ?? profile?.name ?? '',
+          email: profile?.email ?? '',
+          phone: profile?.phone ?? '',
+        },
+        onSuccess: async (paymentId, orderId, signature) => {
+          const confirmRes = await confirmBookingPayment({
+            bookingId,
+            razorpayOrderId:   orderId,
+            razorpayPaymentId: paymentId,
+            razorpaySignature: signature,
+          })
+          if (confirmRes.success === false) {
+            setPayError(confirmRes.error)
+            setPayLoading(false)
+            return
+          }
+          router.push(`/library/${library.id}/book/confirm?booking=${bookingId}`)
+        },
+        onDismiss: () => setPayLoading(false),
+        onError:   (msg) => { setPayError(msg); setPayLoading(false) },
+      })
+    })
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     RENDER
+  ══════════════════════════════════════════════════════════════════════ */
+
+  const today = todayIST()
+  const canPay = !timeError && !!pricePreview && !!selectedSeatId && !payLoading && !isPending
 
   return (
-    <div className="p-5 pb-32 max-w-3xl mx-auto">
-      {/* Back + status */}
+    <div className="p-5 pb-36 max-w-3xl mx-auto">
+
+      {/* ── Back + status ─────────────────────────────────────────────── */}
       <div className="flex items-center gap-2.5 mb-4">
-        <button onClick={() => router.back()}
-          className="flex items-center gap-1 text-[13px] font-medium text-[#6E7F94] hover:text-[#0D1117] transition-colors">
+        <button
+          onClick={() => router.back()}
+          className="flex items-center gap-1 text-[13px] font-medium text-[#6E7F94] hover:text-[#0D1117] transition-colors"
+        >
           <ArrowLeft className="w-4 h-4" /> Back
         </button>
         <span className={[
@@ -96,28 +601,36 @@ export default function LibraryDetail({
         </span>
       </div>
 
-      {/* Hero image */}
-      <div className="relative rounded-xl overflow-hidden h-[200px] sm:h-[240px] mb-5 flex items-center justify-center text-7xl"
-        style={{ background: library.images.length === 0 ? GRADS[0] : undefined }}>
+      {/* ── Hero image ────────────────────────────────────────────────── */}
+      <div
+        className="relative rounded-2xl overflow-hidden h-[200px] sm:h-[240px] mb-5 flex items-center justify-center text-7xl"
+        style={{ background: library.images.length === 0 ? GRADS[0] : undefined }}
+      >
         {library.images.length > 0
           ? <img src={library.images[imgIdx % library.images.length]} alt={library.name} className="w-full h-full object-cover" />
           : '📚'}
-        {library.images.length > 1 && <>
-          <button onClick={() => setImgIdx((i) => (i - 1 + library.images.length) % library.images.length)}
-            className="absolute left-3 top-1/2 -translate-y-1/2 w-8 h-8 bg-white/90 rounded-lg flex items-center justify-center shadow hover:bg-white transition-all">
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <button onClick={() => setImgIdx((i) => (i + 1) % library.images.length)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 bg-white/90 rounded-lg flex items-center justify-center shadow hover:bg-white transition-all">
-            <ChevronRight className="w-4 h-4" />
-          </button>
-          <div className="absolute bottom-3 right-3 px-2.5 py-1 bg-black/50 text-white rounded-md text-[11px] font-semibold">
-            {imgIdx + 1} / {library.images.length}
-          </div>
-        </>}
+        {library.images.length > 1 && (
+          <>
+            <button
+              onClick={() => setImgIdx((i) => (i - 1 + library.images.length) % library.images.length)}
+              className="absolute left-3 top-1/2 -translate-y-1/2 w-8 h-8 bg-white/90 rounded-lg flex items-center justify-center shadow hover:bg-white transition-all"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setImgIdx((i) => (i + 1) % library.images.length)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 bg-white/90 rounded-lg flex items-center justify-center shadow hover:bg-white transition-all"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+            <div className="absolute bottom-3 right-3 px-2.5 py-1 bg-black/50 text-white rounded-md text-[11px] font-semibold">
+              {imgIdx + 1} / {library.images.length}
+            </div>
+          </>
+        )}
       </div>
 
-      {/* Name + price */}
+      {/* ── Name + price ──────────────────────────────────────────────── */}
       <div className="grid grid-cols-[1fr_auto] gap-4 mb-4 items-start">
         <div>
           <h1 className="font-serif text-2xl text-[#0D1117] tracking-[-0.4px] mb-1">{library.name}</h1>
@@ -141,7 +654,7 @@ export default function LibraryDetail({
               ₹{price.rate}<span className="text-[13px] font-medium text-[#6E7F94]"> /hr</span>
             </div>
           ) : (
-            <div className="text-[13px] font-semibold text-[#9AACBE]">No slots configured</div>
+            <div className="text-[13px] font-semibold text-[#9AACBE]">No slots</div>
           )}
           <div className={['text-[12px] font-semibold mt-1', freeSeats > 0 && isOpen ? 'text-[#12A87A]' : 'text-[#9AACBE]'].join(' ')}>
             {isOpen ? (freeSeats > 0 ? `● ${freeSeats} seats free` : 'Library Full') : 'Check back later'}
@@ -149,12 +662,12 @@ export default function LibraryDetail({
         </div>
       </div>
 
-      {/* Description (plain text only — never raw JSON) */}
+      {/* ── Description ───────────────────────────────────────────────── */}
       {library.description && (
         <p className="text-[13px] text-[#6E7F94] leading-relaxed mb-4">{library.description}</p>
       )}
 
-      {/* Active sub badge */}
+      {/* ── Active sub badge ──────────────────────────────────────────── */}
       {activeSub && (
         <div className="flex items-start gap-2.5 p-3.5 rounded-[10px] bg-[#E2F5EE] border border-[#0A7C5C]/20 text-[12px] text-[#0A7C5C] mb-4">
           <span className="text-base flex-shrink-0">⭐</span>
@@ -162,7 +675,7 @@ export default function LibraryDetail({
         </div>
       )}
 
-      {/* Amenities */}
+      {/* ── Amenities ─────────────────────────────────────────────────── */}
       {library.amenities.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-5">
           {library.amenities.map((a) => {
@@ -176,42 +689,215 @@ export default function LibraryDetail({
         </div>
       )}
 
-      {/* Owner-defined time slots — SLOT-ONLY ARCHITECTURE: this list IS the
-          library's operating hours AND its pricing. There is no "custom
-          duration at base_price" option anymore — every booking must fit
-          inside one of these slots. */}
-      {slotOptions.length > 0 && (
-        <div className="bg-white border border-[#E4EAF2] rounded-xl p-4 mb-5">
-          <div className="flex items-center gap-1.5 text-[13px] font-bold text-[#0D1117] mb-3">
-            <Flash className="w-4 h-4 text-amber-500" /> Available Time Slots
-          </div>
-          <div className="flex flex-col gap-2">
-            {slotOptions.map((slot) => (
-              <div key={slot.id}
-                className="flex items-center justify-between p-3 rounded-[10px] bg-[#F4F7FB] border border-[#E4EAF2] cursor-pointer hover:border-[#1E5CFF] hover:bg-[#E8EFFE] transition-all group"
-                onClick={() => router.push(`/library/${library.id}/book/seat?slot=${slot.id}`)}
+      {/* ══════════════════════════════════════════════════════════════════
+           INLINE BOOKING PANEL
+      ══════════════════════════════════════════════════════════════════ */}
+      {hasAnySlots && (
+        <div className="bg-white border border-[#E4EAF2] rounded-2xl overflow-hidden mb-5 shadow-[0_2px_16px_rgba(0,0,0,0.06)]">
+
+          {/* Panel header */}
+          <div className="flex items-center justify-between px-4 py-3.5 border-b border-[#F0F4F8] bg-[#FAFBFF]">
+            <div className="flex items-center gap-2">
+              <Flash className="w-4 h-4 text-amber-500" />
+              <span className="text-[13px] font-bold text-[#0D1117]">Book a Seat</span>
+              {/* Live dot */}
+              <span className="flex items-center gap-1 text-[10px] font-semibold text-[#0D7C54] bg-[#E2F5EE] px-2 py-0.5 rounded-full">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#0D7C54] animate-pulse inline-block" />
+                Live
+              </span>
+            </div>
+            {!bookingOpen && (
+              <button
+                onClick={() => setBookingOpen(true)}
+                className="text-[12px] font-semibold text-[#1E5CFF] hover:underline"
               >
-                <div>
-                  <div className="text-[13px] font-semibold text-[#0D1117]">{slot.label}</div>
-                  <div className="text-[11px] text-[#9AACBE] mt-0.5">{slot.days}</div>
-                </div>
-                <div className="text-right">
-                  {slot.discount > 0 && (
-                    <div className="text-[10px] text-[#9AACBE] line-through">₹{slot.basePrice}/hr</div>
-                  )}
-                  <div className="text-[15px] font-extrabold text-[#1E5CFF]">₹{slot.finalPrice}<span className="text-[10px] font-medium text-[#9AACBE]">/hr</span></div>
-                  {slot.discount > 0 && (
-                    <div className="text-[9px] font-bold text-[#12A87A]">₹{slot.discount} off/hr</div>
-                  )}
-                </div>
-              </div>
-            ))}
+                Open booking →
+              </button>
+            )}
           </div>
-          <div className="text-[11px] text-[#9AACBE] mt-3">Bookings must fit within one of the slots above</div>
+
+          {/* ── Slot selector ─────────────────────────────────────────── */}
+          <div className="px-4 pt-4 pb-3">
+            <p className="text-[11px] font-semibold text-[#9AACBE] uppercase tracking-widest mb-2">
+              Select Slot
+            </p>
+            <div className="flex flex-col gap-1.5">
+              {slotOptions.map((slot) => {
+                const active = slot.id === selectedSlotId
+                return (
+                  <button
+                    key={slot.id}
+                    type="button"
+                    onClick={() => handleSlotChange(slot.id)}
+                    className={[
+                      'flex items-center justify-between rounded-xl border px-4 py-3 text-left transition-all',
+                      active
+                        ? 'border-[#1E5CFF] bg-[rgba(30,92,255,0.05)] shadow-[0_0_0_1px_#1E5CFF]'
+                        : 'border-[#DDE4EE] bg-[#F9FAFC] hover:border-[#1E5CFF] hover:bg-white',
+                    ].join(' ')}
+                  >
+                    <div>
+                      <div className="text-[13px] font-bold text-[#0D1117]">{slot.label}</div>
+                      <div className="text-[11px] text-[#9AACBE] mt-0.5">{slot.days}</div>
+                    </div>
+                    <div className="text-right flex-shrink-0 ml-4">
+                      {slot.discount > 0 && (
+                        <div className="text-[10px] text-[#9AACBE] line-through">₹{slot.basePrice}/hr</div>
+                      )}
+                      <div className="text-[16px] font-extrabold text-[#1E5CFF]">
+                        ₹{slot.finalPrice}<span className="text-[10px] font-medium text-[#9AACBE]">/hr</span>
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* ── Time + date pickers ───────────────────────────────────── */}
+          <div className="px-4 pb-4 border-t border-[#F0F4F8] pt-3">
+            <p className="text-[11px] font-semibold text-[#9AACBE] uppercase tracking-widest mb-3">
+              Choose Time
+            </p>
+            <div className="grid grid-cols-3 gap-3 mb-3">
+              {/* Date */}
+              <div>
+                <label className="text-[11px] font-semibold text-[#6E7F94] uppercase tracking-wider block mb-1.5">
+                  Date
+                </label>
+                <input
+                  type="date"
+                  value={selectedDate}
+                  min={today}
+                  onChange={(e) => handleDateChange(e.target.value)}
+                  className="w-full bg-[#F4F7FB] border border-[#DDE4EE] rounded-lg px-2 py-2 text-[13px] font-semibold text-[#0D1117] outline-none focus:border-[#1E5CFF] focus:bg-white transition-colors cursor-pointer"
+                />
+              </div>
+
+              {/* Start time */}
+              <TimePicker
+                label="Start"
+                value={startTime}
+                onChange={handleStartChange}
+                minMins={slotStartMins}
+                maxMins={slotEndMins - 30}
+              />
+
+              {/* End time */}
+              <TimePicker
+                label="End"
+                value={endTime}
+                onChange={handleEndChange}
+                minMins={startTime ? timeToMinutes(startTime) + 30 : slotStartMins + 30}
+                maxMins={slotEndMins === 1440 ? 1439 : slotEndMins}
+              />
+            </div>
+
+            {/* Time error */}
+            {timeError && <ErrorBox msg={timeError} />}
+
+            {/* Price preview */}
+            {!timeError && durationH >= 0.5 && (
+              <div className="flex items-center justify-between bg-[rgba(30,92,255,0.06)] border border-[rgba(30,92,255,0.18)] rounded-xl px-4 py-2.5 mt-3">
+                <div>
+                  <div className="text-[11px] text-[#6E7F94]">Estimated total</div>
+                  {previewLoading
+                    ? <div className="mt-1 h-3.5 w-24 rounded bg-[#DDE4EE] animate-pulse" />
+                    : pricePreview
+                      ? <div className="text-[11px] text-[#9AACBE]">
+                          {durationH.toFixed(1)} hr × ₹{pricePreview.hourlyRate}/hr
+                        </div>
+                      : null}
+                </div>
+                {previewLoading
+                  ? <Loader2 className="w-5 h-5 text-[#1E5CFF] animate-spin" />
+                  : pricePreview
+                    ? <span className="text-[22px] font-bold text-[#1E5CFF]">₹{pricePreview.amount}</span>
+                    : null}
+              </div>
+            )}
+          </div>
+
+          {/* ── Seat Map ──────────────────────────────────────────────── */}
+          {bookingOpen && (
+            <div className="px-4 pb-4 border-t border-[#F0F4F8] pt-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-[11px] font-semibold text-[#9AACBE] uppercase tracking-widest">
+                  Pick a Seat
+                </p>
+                <span className="text-[10px] text-[#0D7C54] font-semibold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#0D7C54] animate-pulse inline-block" />
+                  Updates live
+                </span>
+              </div>
+
+              <SeatGrid
+                seats={seats}
+                selectedId={selectedSeatId}
+                onSelect={(id) => { setSelectedSeatId(id || null); setSeatError(''); setPayError('') }}
+                loading={seatsLoading}
+              />
+
+              {seatError && <div className="mt-3"><ErrorBox msg={seatError} /></div>}
+
+              {/* Selected seat pill */}
+              {selectedSeat && (
+                <div className="mt-3 flex items-center justify-between bg-[rgba(30,92,255,0.05)] border border-[rgba(30,92,255,0.2)] rounded-xl px-4 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <Armchair className="w-4 h-4 text-[#1E5CFF]" />
+                    <span className="text-[13px] font-bold text-[#0D1117]">
+                      Seat {selectedSeat.label} selected
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSeatId(null)}
+                    className="text-[12px] text-[#1E5CFF] font-semibold hover:underline"
+                  >
+                    Change
+                  </button>
+                </div>
+              )}
+
+              {/* Pay error */}
+              {payError && <div className="mt-3"><ErrorBox msg={payError} /></div>}
+
+              {/* Pay CTA */}
+              <button
+                type="button"
+                onClick={handlePay}
+                disabled={!canPay}
+                className="mt-4 w-full py-3.5 rounded-xl bg-[#1E5CFF] text-white text-[14px] font-bold flex items-center justify-center gap-2 shadow-[0_4px_20px_rgba(30,92,255,.3)] hover:bg-[#1447D4] transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
+              >
+                {payLoading || isPending
+                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Processing…</>
+                  : <><CreditCard className="w-4 h-4" /> Pay ₹{pricePreview?.amount ?? '—'}</>}
+              </button>
+
+              {pricePreview && !payLoading && (
+                <p className="text-center text-[11px] text-[#9AACBE] mt-2">
+                  Seat held for 15 min after clicking Pay
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* "Open booking" prompt when panel is closed */}
+          {!bookingOpen && hasAnySlots && (
+            <div className="px-4 pb-4">
+              <button
+                type="button"
+                onClick={() => setBookingOpen(true)}
+                className="w-full py-3.5 rounded-xl bg-[#1E5CFF] text-white text-[14px] font-bold flex items-center justify-center gap-2 shadow-[0_4px_20px_rgba(30,92,255,.3)] hover:bg-[#1447D4] transition-colors"
+              >
+                See Available Seats <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Membership Plans (dynamic from DB) */}
+      {/* ── Membership Plans ─────────────────────────────────────────── */}
       {plans.length > 0 && (
         <div className="bg-white border border-[#E4EAF2] rounded-xl p-4 mb-5">
           <div className="flex items-center justify-between mb-3">
@@ -220,14 +906,20 @@ export default function LibraryDetail({
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
             {plans.slice(0, 3).map((p, i) => (
-              <div key={p.id}
+              <div
+                key={p.id}
                 className="border-[1.5px] rounded-[10px] p-3 text-center cursor-pointer hover:shadow-[0_4px_24px_rgba(30,92,255,.1)] transition-all"
-                style={{ borderColor: i === 1 ? '#1E5CFF' : '#E4EAF2', background: i === 1 ? 'linear-gradient(150deg,#F0F5FF,#F8FAFF)' : 'white' }}
+                style={{
+                  borderColor: i === 1 ? '#1E5CFF' : '#E4EAF2',
+                  background:  i === 1 ? 'linear-gradient(150deg,#F0F5FF,#F8FAFF)' : 'white',
+                }}
                 onClick={() => router.push('/student/plans')}
               >
                 {i === 1 && <div className="text-[9px] font-bold text-[#1E5CFF] mb-0.5">⭐ Popular</div>}
                 <div className="text-[12px] font-bold text-[#0D1117]">{p.name}</div>
-                <div className="text-[20px] font-extrabold my-0.5" style={{ color: PLAN_COLORS[i % PLAN_COLORS.length] }}>₹{p.price}</div>
+                <div className="text-[20px] font-extrabold my-0.5" style={{ color: PLAN_COLORS[i % PLAN_COLORS.length] }}>
+                  ₹{p.price}
+                </div>
                 <div className="text-[10px] text-[#6E7F94]">{p.duration_days}d · {p.session_limit ?? 'Unlimited'}</div>
                 <div className="mt-2 text-[10px] text-[#1E5CFF] font-medium">Subscribe →</div>
               </div>
@@ -236,20 +928,12 @@ export default function LibraryDetail({
         </div>
       )}
 
-      {/* Address */}
-      <div className="bg-white border border-[#E4EAF2] rounded-xl p-4 mb-5">
-        <div className="flex items-center gap-1.5 text-[12px] font-bold text-[#0D1117] mb-1.5">
-          <MapPin className="w-3.5 h-3.5 text-[#9AACBE]" /> Location
-        </div>
-        <div className="text-[13px] text-[#6E7F94]">{library.address}</div>
-      </div>
-
-      {/* Stats row */}
-      <div className="grid grid-cols-3 gap-3 mb-6">
+      {/* ── Stats row ─────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-3 gap-3 mb-5">
         {[
-          { icon: Users,    label: 'Free Seats', value: isOpen ? `${freeSeats}` : '—'       },
-          { icon: Calendar, label: 'Today',      value: status.todayHoursLabel               },
-          { icon: Star,     label: 'Rating',     value: `${library.rating.toFixed(1)}/5`    },
+          { icon: Users,    label: 'Free Seats', value: isOpen ? `${freeSeats}` : '—' },
+          { icon: Calendar, label: 'Today',      value: status.todayHoursLabel },
+          { icon: Star,     label: 'Rating',     value: `${library.rating.toFixed(1)}/5` },
         ].map(({ icon: Icon, label, value }) => (
           <div key={label} className="bg-white border border-[#E4EAF2] rounded-xl p-3 text-center">
             <Icon className="w-4 h-4 text-[#9AACBE] mx-auto mb-1" />
@@ -259,28 +943,43 @@ export default function LibraryDetail({
         ))}
       </div>
 
-      {/* Sticky CTA */}
-      <div className="fixed bottom-0 left-0 right-0 lg:left-[252px] bg-white/95 backdrop-blur-sm border-t border-[#E4EAF2] px-5 py-4 z-50">
-        <div className="max-w-3xl mx-auto flex items-center gap-4">
-          <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-bold text-[#0D1117] truncate">{library.name}</div>
-            <div className="text-[11px] text-[#6E7F94]">
-              {isOpen
-                ? freeSeats > 0
-                  ? `${freeSeats} seats${price ? ` · from ₹${price.rate}/hr` : ''}`
-                  : 'No seats available right now'
-                : `Closed — ${status.todayHoursLabel}`}
-            </div>
-          </div>
-          <button
-            disabled={!isOpen || freeSeats === 0}
-            onClick={() => router.push(`/library/${library.id}/book/seat`)}
-            className="flex-shrink-0 px-6 py-3 rounded-xl text-[14px] font-bold bg-[#1E5CFF] text-white shadow-[0_4px_24px_rgba(30,92,255,.3)] hover:bg-[#1447D4] hover:-translate-y-px transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
-          >
-            {!isOpen ? 'Closed' : freeSeats === 0 ? 'Full' : 'Book Seat →'}
-          </button>
+      {/* ── Address ───────────────────────────────────────────────────── */}
+      <div className="bg-white border border-[#E4EAF2] rounded-xl p-4">
+        <div className="flex items-center gap-1.5 text-[12px] font-bold text-[#0D1117] mb-1.5">
+          <MapPin className="w-3.5 h-3.5 text-[#9AACBE]" /> Location
         </div>
+        <div className="text-[13px] text-[#6E7F94]">{library.address}</div>
       </div>
+
+      {/* ── Sticky CTA (collapsed state — opens panel) ────────────────── */}
+      {!bookingOpen && hasAnySlots && (
+        <div className="fixed bottom-0 left-0 right-0 lg:left-[252px] bg-white/95 backdrop-blur-sm border-t border-[#E4EAF2] px-5 py-4 z-50">
+          <div className="max-w-3xl mx-auto flex items-center gap-4">
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-bold text-[#0D1117] truncate">{library.name}</div>
+              <div className="text-[11px] text-[#6E7F94]">
+                {isOpen
+                  ? freeSeats > 0
+                    ? `${freeSeats} seats free${price ? ` · from ₹${price.rate}/hr` : ''}`
+                    : 'All seats taken — try a different time'
+                  : `Closed now · ${status.todayHoursLabel}`}
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                setBookingOpen(true)
+                // Scroll to booking panel
+                setTimeout(() => {
+                  document.querySelector('[data-booking-panel]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                }, 100)
+              }}
+              className="flex-shrink-0 px-6 py-3 rounded-xl text-[14px] font-bold bg-[#1E5CFF] text-white shadow-[0_4px_24px_rgba(30,92,255,.3)] hover:bg-[#1447D4] hover:-translate-y-px transition-all"
+            >
+              Book Seat →
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

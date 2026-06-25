@@ -168,7 +168,7 @@ export async function getSeniorSeatLayout(libraryId: string): Promise<SeniorSeat
       .from('bookings')
       .select(`
         id, seat_id, status, booking_mode,
-        start_time, end_time,
+        start_time, end_time, hold_expires_at,
         guest_name, guest_phone, user_id,
         users(full_name, phone)
       `)
@@ -180,8 +180,16 @@ export async function getSeniorSeatLayout(libraryId: string): Promise<SeniorSeat
 
   if (!seatsRes.data?.length) return []
 
+  const nowMs = new Date(now).getTime()
+
   const bookingBySeat = new Map<string, any>()
   for (const b of bookingsRes.data ?? []) {
+    // Option B: expired holds are treated as free at query-result level.
+    // The DB EXCLUDE constraint still prevents double-booking at write time.
+    if (b.status === 'held' && b.hold_expires_at) {
+      const expiresMs = new Date(b.hold_expires_at).getTime()
+      if (expiresMs < nowMs) continue   // skip — treat as free
+    }
     if (!bookingBySeat.has(b.seat_id)) bookingBySeat.set(b.seat_id, b)
   }
 
@@ -420,6 +428,9 @@ export async function seniorManualBook(
   )
   revalidatePath('/staff')
   revalidatePath('/staff/seat-manager')
+  // Owner must also see the staff-created booking
+  revalidatePath('/dashboard/seat-manager')
+  revalidatePath('/dashboard')
   return { success: true, data: { bookingId: booking.id } }
 }
 
@@ -473,5 +484,8 @@ export async function seniorForceFree(
   log('seniorForceFree', `cancelled booking=${bookingId} seat=${seatId} by staff=${user.id}`)
   revalidatePath('/staff')
   revalidatePath('/staff/seat-manager')
+  // Owner must also see the freed seat
+  revalidatePath('/dashboard/seat-manager')
+  revalidatePath('/dashboard')
   return { success: true, data: { cancelledBookingId: bookingId } }
 }

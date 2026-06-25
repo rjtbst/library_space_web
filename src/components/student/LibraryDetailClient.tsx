@@ -2,25 +2,13 @@
 /**
  * Server-component wrapper around LibraryDetail.
  *
- * The library-detail page (app/(student)/library/[id]/page.tsx) fetches
- * `library`, `books`, and `profile` and passes them here.
- *
- * SLOT-ONLY ARCHITECTURE: `library` (a LibraryCard from getLibraryDetail)
- * already includes `slots` (all slot_configs for this library, active +
- * inactive) and `status` (open/closed + today's hours, derived from those
- * slots via lib/booking/libraryStatus.ts) — both computed once in
- * getLibraryDetail/buildCard, so this wrapper just passes them through. No
- * separate fetch is needed for slots or open/closed status.
- *
- * This component fetches the one piece of data that depends on the
- * signed-in user — the active subscription for this library — then renders
- * the 'use client' LibraryDetail with the exact shape it expects.
- *
- * NOTE: `books` and `profile` are accepted for forward-compatibility with
- * the page contract but are not rendered by the current LibraryDetail
- * component (which covers the hero/info/slots/plans/CTA sections only —
- * no Books tab). If/when a Books tab is added to LibraryDetail, wire
- * `books` through as a prop at that point.
+ * Fetches the active subscription (user-specific, requires auth) then
+ * renders the 'use client' LibraryDetail with everything it needs for
+ * the unified inline booking flow:
+ *   - library info, slots, status (from getLibraryDetail via page)
+ *   - plans (from getLibraryDetail via page)
+ *   - activeSub (fetched here — user-specific)
+ *   - profile (passed from page — for Razorpay prefill in inline booking)
  */
 
 import LibraryDetail from './LibraryDetail'
@@ -34,7 +22,7 @@ import {
 export default async function LibraryDetailClient({
   library,
   books: _books,
-  profile: _profile,
+  profile,
 }: {
   library: LibraryCard
   books:   LibraryBook[]
@@ -61,6 +49,7 @@ export default async function LibraryDetailClient({
       freeSeats={library.available_seats}
       status={library.status}
       activeSub={activeSub}
+      profile={profile}
     />
   )
 }

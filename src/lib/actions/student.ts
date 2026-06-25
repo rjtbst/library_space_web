@@ -41,6 +41,13 @@ import {
   createRazorpayOrder,
   verifyRazorpaySignature,
 } from '@/lib/razorpay/server'
+import {
+  IS_TEST_MODE,
+  makeTestOrderId,
+  makeTestPaymentId,
+  TEST_SIGNATURE,
+  isTestPayload,
+} from '@/lib/testMode'
 
 /* ─── Shared result type ─────────────────────────────────────────────────── */
 export type ActionResult<T = undefined> =
@@ -669,14 +676,26 @@ export async function getSeatAvailability(
       .order('column_number'),
     supabase
       .from('bookings')
-      .select('seat_id')
+      .select('seat_id, status, hold_expires_at')
       .eq('library_id', libraryId)
       .in('status', ['confirmed', 'checked_in', 'held'] as never[])
       .lt('start_time', endTime)
       .gt('end_time', startTime),
   ])
 
-  const bookedIds = new Set((conflictRes.data ?? []).map((b: any) => b.seat_id as string))
+  const nowMs = Date.now()
+
+  // Option B: filter out held bookings whose hold window has expired.
+  // These seats are effectively free — no cron needed to release them.
+  const bookedIds = new Set(
+    (conflictRes.data ?? [])
+      .filter((b: any) => {
+        if (b.status !== 'held') return true           // confirmed / checked_in always block
+        if (!b.hold_expires_at) return true            // held with no expiry — treat as active
+        return new Date(b.hold_expires_at).getTime() > nowMs  // active hold blocks
+      })
+      .map((b: any) => b.seat_id as string)
+  )
 
   return (seatsRes.data ?? []).map((s: any) => ({
     id:            s.id as string,
@@ -710,6 +729,7 @@ export async function initiateBooking(
   razorpayKeyId:   string
   libraryName:     string
   hourlyRate:      number
+  testMode?:       boolean
 }>> {
   const parsed = initiateBookingSchema.safeParse(input)
   if (!parsed.success)
@@ -822,17 +842,26 @@ export async function initiateBooking(
 
   // Create Razorpay order — only reached after every cheap conflict check
   // above has passed, so a losing request in a race never gets here.
-  const orderResult = await createRazorpayOrder({
-    amountINR,
-    razorpayAccountId: lib.razorpay_account_id,
-    currency: 'INR',
-    notes: { student_id: user.id, library_id: libraryId, library_name: lib.name ?? '' },
-  })
+  // TEST_MODE: bypass Razorpay entirely with a synthetic order ID.
+  let orderId: string
+  let keyId: string
 
-  if (orderResult.success === false)
-    return { success: false, error: orderResult.error }
-
-  const { orderId, keyId } = orderResult.data
+  if (IS_TEST_MODE) {
+    console.log('[TEST_MODE] Bypassing Razorpay order creation')
+    orderId = makeTestOrderId()
+    keyId   = process.env.RAZORPAY_KEY_ID ?? 'test_key'
+  } else {
+    const orderResult = await createRazorpayOrder({
+      amountINR,
+      razorpayAccountId: lib.razorpay_account_id,
+      currency: 'INR',
+      notes: { student_id: user.id, library_id: libraryId, library_name: lib.name ?? '' },
+    })
+    if (orderResult.success === false)
+      return { success: false, error: orderResult.error }
+    orderId = orderResult.data.orderId
+    keyId   = orderResult.data.keyId
+  }
 
   // Hold booking (15-min window)
   // nowIST() returns "YYYY-MM-DDTHH:mm:ss.mmm" as plain IST wall-clock.
@@ -886,6 +915,7 @@ export async function initiateBooking(
       razorpayKeyId:   keyId,
       libraryName:     lib.name ?? '',
       hourlyRate:      priceResolution.hourlyRate,
+      testMode:        IS_TEST_MODE,
     },
   }
 }
@@ -913,9 +943,14 @@ export async function confirmBookingPayment(
 
   const { bookingId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = parsed.data
 
-  // Verify Razorpay signature server-side
-  if (!verifyRazorpaySignature(razorpayOrderId, razorpayPaymentId, razorpaySignature))
+  // Verify Razorpay signature server-side.
+  // TEST_MODE: skip verification for synthetic payment IDs.
+  const bypassVerification = isTestPayload(razorpayOrderId, razorpayPaymentId, razorpaySignature)
+  if (!bypassVerification && !verifyRazorpaySignature(razorpayOrderId, razorpayPaymentId, razorpaySignature))
     return { success: false, error: 'Payment verification failed. Contact support if amount was deducted.' }
+  if (bypassVerification) {
+    console.log('[TEST_MODE] Skipping Razorpay signature verification for booking:', bookingId)
+  }
 
   // Fetch booking
   const { data: booking } = await supabase
@@ -935,12 +970,17 @@ export async function confirmBookingPayment(
   if (booking.status !== 'held')
     return { success: false, error: `Booking status is '${booking.status}' — cannot confirm` }
 
-  // Check hold not expired
+  // Check hold not expired.
+  // hold_expires_at is stored as IST (no timezone suffix). Parse carefully.
+  // We give a 2-minute grace window beyond expiry — Razorpay payment can take
+  // a few seconds after the hold window closes (slow connection, bank 2FA, etc.)
+  // and we don't want to reject a payment that legitimately completed in time.
   const holdMs = booking.hold_expires_at
-    ? new Date((booking.hold_expires_at as string) + '+05:30').getTime()
+    ? new Date(booking.hold_expires_at as string).getTime()
     : 0
-  if (holdMs > 0 && Date.now() > holdMs)
-    return { success: false, error: 'Seat hold has expired. Please start a new booking.' }
+  const GRACE_MS = 2 * 60 * 1000   // 2 minutes
+  if (holdMs > 0 && Date.now() > holdMs + GRACE_MS)
+    return { success: false, error: 'Your seat hold expired before payment completed. Please start a new booking — your money will be refunded within 5–7 business days if deducted.' }
 
   // Atomic update
   const [bRes, pRes] = await Promise.all([
@@ -958,7 +998,46 @@ export async function confirmBookingPayment(
   if (bRes.error)
     return { success: false, error: bRes.error.message }
 
+  // Insert in-app booking confirmation notification (non-blocking — failure
+  // doesn't affect the confirmed booking)
+  try {
+    const { data: bkgDetail } = await supabase
+      .from('bookings')
+      .select('library_id, start_time, end_time, seats(row_label, column_number), libraries(name)')
+      .eq('id', bookingId)
+      .maybeSingle()
+
+    if (bkgDetail) {
+      const seat    = (bkgDetail as any).seats
+      const library = (bkgDetail as any).libraries
+      const seatLabel = seat ? `${seat.row_label}${seat.column_number}` : 'your seat'
+      const libName   = library?.name ?? 'the library'
+      const startIST  = bkgDetail.start_time as string
+
+      await (supabase as any).from('notifications').insert({
+        user_id:    user.id,
+        library_id: bkgDetail.library_id,
+        booking_id: bookingId,
+        channel:    'in_app',
+        event:      'booking_confirmed',
+        status:     'sent',
+        title:      'Booking Confirmed ✅',
+        body:       `Seat ${seatLabel} at ${libName} confirmed for ${startIST.slice(0, 16).replace('T', ' at ')}.`,
+        payload:    JSON.stringify({ bookingId, seatLabel, libName, startTime: startIST }),
+      })
+    }
+  } catch (notifErr) {
+    // Notification insert failure must never block a confirmed payment
+    console.warn('[confirmBookingPayment] notification insert failed:', notifErr)
+  }
+
   revalidatePath('/bookings')
+  // Notify staff and owner seat-manager views so they reflect the new
+  // confirmed booking without waiting for the next manual page load
+  revalidatePath('/staff/seat-manager')
+  revalidatePath('/staff')
+  revalidatePath('/dashboard/seat-manager')
+  revalidatePath('/dashboard')
   return { success: true, data: { bookingId } }
 }
 
@@ -995,6 +1074,11 @@ export async function cancelBooking(bookingId: string): Promise<ActionResult> {
   if (error) return { success: false, error: error.message }
 
   revalidatePath('/bookings')
+  // Free up the seat in owner/staff views immediately on next render
+  revalidatePath('/staff/seat-manager')
+  revalidatePath('/staff')
+  revalidatePath('/dashboard/seat-manager')
+  revalidatePath('/dashboard')
   return { success: true, data: undefined }
 }
 

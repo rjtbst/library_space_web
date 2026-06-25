@@ -443,15 +443,19 @@ export async function checkInBooking(bookingId: string): Promise<ActionResult> {
 
   const { data: booking, error: fetchErr } = await supabase
     .from('bookings')
-    .select('id, library_id, libraries(owner_id)')
+    .select('id, library_id, status, libraries(owner_id)')
     .eq('id', bookingId)
     .maybeSingle()
 
   if (fetchErr) { logError('checkInBooking', 'Fetch failed', fetchErr); return { success: false, error: fetchErr.message } }
+  if (!booking) return { success: false, error: 'Booking not found' }
 
   const ownerRaw = booking?.libraries
   const ownerId  = Array.isArray(ownerRaw) ? ownerRaw[0]?.owner_id : (ownerRaw as any)?.owner_id
   if (ownerId !== user.id) return { success: false, error: 'Access denied' }
+
+  if (!['confirmed', 'held'].includes(booking.status as string))
+    return { success: false, error: `Cannot check in — status is ${booking.status}` }
 
   const { error } = await supabase
     .from('bookings').update({ status: 'checked_in' as never }).eq('id', bookingId)
@@ -461,7 +465,45 @@ export async function checkInBooking(bookingId: string): Promise<ActionResult> {
   log('checkInBooking', `booking=${bookingId} checked in`)
   revalidatePath('/dashboard')
   revalidatePath('/dashboard/bookings')
+  revalidatePath('/dashboard/seat-manager')
+  revalidatePath('/dashboard/scanner')
   return { success: true, data: undefined }
+}
+
+/**
+ * Owner equivalent of staff.ts's lookupBookingForScan — same shape and same
+ * behavior, scoped via libraries(owner_id) instead of the staff table (an
+ * owner has no row in `staff`, so the staff version would always reject
+ * them with "Staff record not found").
+ */
+export async function lookupBookingForOwnerScan(bookingId: string): Promise<ActionResult<{
+  id: string; seatLabel: string; studentName: string
+  startTime: string; endTime: string; status: string
+}>> {
+  const { supabase, user } = await getSupabaseUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  const { data: booking, error } = await supabase
+    .from('bookings')
+    .select('id, start_time, end_time, status, library_id, guest_name, user_id, libraries(owner_id), seats(row_label, column_number), users(full_name)')
+    .eq('id', bookingId)
+    .maybeSingle()
+
+  if (error || !booking) return { success: false, error: 'Booking not found' }
+
+  const b        = booking as any
+  const ownerRaw = b.libraries
+  const ownerId  = Array.isArray(ownerRaw) ? ownerRaw[0]?.owner_id : ownerRaw?.owner_id
+  if (ownerId !== user.id) return { success: false, error: 'Booking belongs to a different library' }
+
+  const isGuest   = !b.user_id || !b.users
+  const name      = isGuest ? (b.guest_name ?? 'Walk-in') : (b.users?.full_name ?? 'Unknown')
+  const seatLabel = b.seats ? `${b.seats.row_label}${b.seats.column_number}` : '?'
+
+  return {
+    success: true,
+    data: { id: b.id, seatLabel, studentName: name, startTime: b.start_time, endTime: b.end_time, status: b.status },
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

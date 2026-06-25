@@ -136,6 +136,9 @@ export default function StaffSidebar({
             <Link
               key={item.href}
               href={item.href}
+              onClick={() => {
+                if (pathname !== item.href) (window as any).__startStaffNavProgress?.()
+              }}
               style={{
                 display:        'flex',
                 alignItems:     'center',
@@ -227,6 +230,9 @@ export default function StaffSidebar({
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={() => {
+                  if (pathname !== item.href) (window as any).__startStaffNavProgress?.()
+                }}
                 style={{
                   flex:           1,
                   display:        'flex',

@@ -7,6 +7,10 @@ export default async function StudentLayout({
 }: {
   children: React.ReactNode
 }) {
- await requireRole('student')
-  return <StudentShell>{children}</StudentShell>
+  const { profile } = await requireRole('student')
+  return (
+    <StudentShell displayName={profile.full_name ?? null}>
+      {children}
+    </StudentShell>
+  )
 }

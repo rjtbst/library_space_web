@@ -34,8 +34,6 @@ interface PageProps {
 
 export default async function BookSeatPage({ params, searchParams }: PageProps) {
   const libraryId = params.id
-    console.log('=== BOOK SEAT PAGE HIT ===')
-  console.log('params:', params)
   const lat = searchParams.lat ? parseFloat(searchParams.lat) : undefined
   const lng = searchParams.lng ? parseFloat(searchParams.lng) : undefined
 

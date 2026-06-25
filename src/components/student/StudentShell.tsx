@@ -7,9 +7,18 @@
  * Mobile:  hamburger menu → slide-over sidebar + fixed top header.
  *
  * Matches the design language from the existing layout (doc 9).
+ *
+ * PERFORMANCE NOTE: `displayName` is passed in from the server layout
+ * (app/(student)/layout.tsx), which already fetches the user's profile via
+ * requireRole() for the role check. Previously this component re-fetched
+ * the same `users` row again from the browser on every mount — a second,
+ * purely-client-side round trip (auth.getUser() + a `users` SELECT) for
+ * data the server already had in hand one render earlier. Passing it down
+ * as a prop removes that extra request and the brief "Student" placeholder
+ * flash while it resolved.
  */
 
-import { useState, useEffect } from 'react'
+import { useState, Suspense } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createBrowserSupabaseClient } from '@/lib/supabase/client'
@@ -21,6 +30,7 @@ import {
 import { cn } from '@/lib/utils'
 import { getInitials, avatarGradient } from '@/lib/utils'
 import NotificationBell from './NotificationBell'
+import { StudentNavProgressBar } from './NavProgressBar'
 
 const NAV_ITEMS = [
   { href: '/explore',        icon: Building2,    label: 'Find Libraries'    },
@@ -31,30 +41,20 @@ const NAV_ITEMS = [
   { href: '/profile',        icon: User,         label: 'My Profile'        },
 ] as const
 
-type UserMeta = { full_name?: string | null; name?: string | null; phone?: string | null }
-
-export default function StudentShell({ children }: { children: React.ReactNode }) {
+export default function StudentShell({
+  children,
+  displayName,
+}: {
+  children: React.ReactNode
+  displayName?: string | null
+}) {
   const pathname = usePathname()
   const router   = useRouter()
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [userMeta,    setUserMeta]    = useState<UserMeta | null>(null)
 
-  useEffect(() => {
-    const supabase = createBrowserSupabaseClient()
-    supabase.auth.getUser().then(async ({ data }) => {
-      if (!data.user) { router.push('/auth/login'); return }
-      const { data: profile } = await supabase
-        .from('users')
-        .select('full_name, name, phone')
-        .eq('id', data.user.id)
-        .single()
-      setUserMeta(profile)
-    })
-  }, [router])
-
-  const displayName = userMeta?.full_name || userMeta?.name || 'Student'
-  const initials    = getInitials(displayName)
-  const gradient    = avatarGradient(displayName)
+  const finalDisplayName = displayName || 'Student'
+  const initials         = getInitials(finalDisplayName)
+  const gradient         = avatarGradient(finalDisplayName)
 
   const currentLabel =
     NAV_ITEMS.find((n) => pathname === n.href || pathname.startsWith(n.href + '/'))?.label
@@ -68,6 +68,11 @@ export default function StudentShell({ children }: { children: React.ReactNode }
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#F4F7FB]">
+      {/* StudentNavProgressBar needs Suspense because it reads useSearchParams */}
+      <Suspense fallback={null}>
+        <StudentNavProgressBar />
+      </Suspense>
+
       {/* ── Mobile overlay ─────────────────────────────────── */}
       {sidebarOpen && (
         <div
@@ -118,7 +123,10 @@ export default function StudentShell({ children }: { children: React.ReactNode }
               <Link
                 key={item.href}
                 href={item.href}
-                onClick={() => setSidebarOpen(false)}
+                onClick={() => {
+                  setSidebarOpen(false)
+                  if (pathname !== item.href) (window as any).__startStudentNavProgress?.()
+                }}
                 className={cn(
                   'flex items-center gap-[9px] px-4 py-[7px] text-[13px] font-medium',
                   'cursor-pointer transition-all duration-120 border-l-[2.5px]',
@@ -150,7 +158,7 @@ export default function StudentShell({ children }: { children: React.ReactNode }
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-[12px] font-semibold text-[#0D1117] truncate max-w-[130px]">
-                {displayName}
+                {finalDisplayName}
               </div>
               <div className="text-[10px] text-[#9AACBE]">Student</div>
             </div>

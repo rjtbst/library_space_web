@@ -12,6 +12,7 @@ const NAV = [
   { href: '/dashboard/my-libraries', icon: '🏛️', label: 'My Libraries'     },
   { href: '/dashboard/bookings',     icon: '📋', label: "Today's Bookings" },
   { href: '/dashboard/seat-manager', icon: '💺', label: 'Seat Manager'     },
+  { href: '/dashboard/scanner',      icon: '📷', label: 'QR Scanner'       },
   { href: '/dashboard/slot-config',  icon: '⏰', label: 'Slot Config'      },
   { href: '/dashboard/plan-builder', icon: '🎯', label: 'Plan Builder'     },
   { href: '/dashboard/staff',        icon: '👥', label: 'Staff'            },

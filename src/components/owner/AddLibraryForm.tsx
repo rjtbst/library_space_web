@@ -38,9 +38,6 @@ type FormState = {
   city:       string
   area:       string
   address:    string
-  openTime:   string
-  closeTime:  string
-  basePrice:  string
   totalSeats: string
   amenityIds: string[]    // UUIDs
   lat:        number | null
@@ -145,9 +142,6 @@ export default function AddLibraryForm({
         city:       existingLibrary.city,
         area:       existingLibrary.area,
         address:    existingLibrary.address,
-        openTime:   existingLibrary.open_time,
-        closeTime:  existingLibrary.close_time,
-        basePrice:  existingLibrary.base_price  != null ? String(existingLibrary.base_price)  : '',
         totalSeats: existingLibrary.total_seats > 0     ? String(existingLibrary.total_seats) : '',
         amenityIds: existingLibrary.amenityIds,
         lat:        existingLibrary.latitude,
@@ -167,9 +161,7 @@ export default function AddLibraryForm({
           city:       draft.city       ?? (draft.state === profileState ? profileCity : '') ?? '',
           area:       draft.area       ?? '',
           address:    draft.address    ?? '',
-          openTime:   draft.openTime   ?? '06:00',
-          closeTime:  draft.closeTime  ?? '22:00',
-          basePrice:  draft.basePrice  ?? '',
+         
           totalSeats: draft.totalSeats ?? '',
           amenityIds: draft.amenityIds ?? [],
           lat:        draft.lat        ?? null,
@@ -186,9 +178,7 @@ export default function AddLibraryForm({
       city:       profileCity,
       area:       '',
       address:    '',
-      openTime:   '06:00',
-      closeTime:  '22:00',
-      basePrice:  '',
+    
       totalSeats: '',
       amenityIds: [],
       lat:        null,
@@ -234,9 +224,7 @@ export default function AddLibraryForm({
     !!form.city &&
     form.area.trim().length >= 1 &&
     form.address.trim().length >= 5 &&
-    !!form.openTime &&
-    !!form.closeTime &&
-    !!form.basePrice &&
+
     !!form.totalSeats &&
     form.amenityIds.length > 0
 
@@ -251,9 +239,7 @@ export default function AddLibraryForm({
         city:                form.city,
         area:                form.area.trim(),
         address:             form.address.trim(),
-        open_time:           form.openTime,
-        close_time:          form.closeTime,
-        base_price:          parseFloat(form.basePrice),
+
         total_seats:         parseInt(form.totalSeats, 10),
         amenity_ids:         form.amenityIds,
         latitude:            form.lat,
@@ -397,19 +383,7 @@ export default function AddLibraryForm({
               )}
             </div>
 
-            {/* Open / Close times */}
-            {/* <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <Field label="Opening time" required>
-                <input type="time" value={form.openTime}
-                  onChange={e => patch({ openTime: e.target.value })}
-                  style={inpBase} onFocus={onFocus} onBlur={onBlur} />
-              </Field>
-              <Field label="Closing time" required>
-                <input type="time" value={form.closeTime}
-                  onChange={e => patch({ closeTime: e.target.value })}
-                  style={inpBase} onFocus={onFocus} onBlur={onBlur} />
-              </Field>
-            </div> */}
+        
 
             {/* Amenities — driven by DB list, keyed by UUID */}
             <div style={{ marginBottom: 16 }}>
@@ -443,23 +417,7 @@ export default function AddLibraryForm({
               </div>
             </div>
 
-            {/* Base price + Total seats */}
-            {/* <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <Field label="Base price / month (₹)" required>
-                <input
-                  type="number" min="0" step="1" placeholder="999"
-                  value={form.basePrice} onChange={e => patch({ basePrice: e.target.value })}
-                  style={inpBase} onFocus={onFocus} onBlur={onBlur}
-                />
-              </Field>
-              <Field label="Total seats" required>
-                <input
-                  type="number" min="1" step="1" placeholder="48"
-                  value={form.totalSeats} onChange={e => patch({ totalSeats: e.target.value })}
-                  style={inpBase} onFocus={onFocus} onBlur={onBlur}
-                />
-              </Field>
-            </div> */}
+         
 
             {/* Razorpay — optional */}
             <Field

@@ -98,12 +98,10 @@ export default function StaffSeatManagerClient({
    * or an owner force-freeing a seat all show up here without a manual
    * page refresh. See hooks/useSeatLayoutRealtime.ts for why this
    * re-fetches rather than patching the changed row directly. */
+  const [isRefreshing, setIsRefreshing] = useState(false)
+
   const refreshSeats = useCallback(() => {
-    // TEMP DIAGNOSTIC LOGGING — remove once the realtime gap is found.
-    console.log('[StaffSeatManagerClient] refreshSeats called, fetching getSeniorSeatLayout for', libraryId)
     getSeniorSeatLayout(libraryId).then((fresh) => {
-      console.log('[StaffSeatManagerClient] getSeniorSeatLayout returned', fresh.length, 'seats. Booked/held seats:',
-        fresh.filter(s => s.live_status === 'booked' || s.live_status === 'held'))
       setSeats(fresh)
       // Keep the open side panel in sync if it's showing the seat that
       // just changed, without auto-closing it on the staff member.
@@ -111,6 +109,20 @@ export default function StaffSeatManagerClient({
         if (!prevSelected) return null
         return fresh.find((s) => s.id === prevSelected.id) ?? prevSelected
       })
+    })
+  }, [libraryId])
+
+  // Manual refresh button — same refetch the realtime hook uses, but
+  // user-triggered for a quick "let me check right now" moment.
+  const handleManualRefresh = useCallback(() => {
+    setIsRefreshing(true)
+    getSeniorSeatLayout(libraryId).then((fresh) => {
+      setSeats(fresh)
+      setSelected((prevSelected) => {
+        if (!prevSelected) return null
+        return fresh.find((s) => s.id === prevSelected.id) ?? prevSelected
+      })
+      setIsRefreshing(false)
     })
   }, [libraryId])
 
@@ -250,17 +262,40 @@ export default function StaffSeatManagerClient({
             {libraryName} · {seats.length} seats · IST
           </div>
         </div>
-        <button
-          onClick={() => setShowAddRow(v => !v)}
-          style={{
-            padding: '8px 14px', borderRadius: 9, fontSize: 13, fontWeight: 600,
-            border: '1.5px solid #E2DDD4', background: '#FDFCF9', color: '#3A4A5C',
-            cursor: 'pointer', fontFamily: 'DM Sans, sans-serif', flexShrink: 0,
-          }}
-        >
-          + Add Row
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          <button
+            onClick={handleManualRefresh}
+            disabled={isRefreshing}
+            title="Refresh seat status"
+            style={{
+              width: 38, height: 38, borderRadius: 9,
+              border: '1.5px solid #E2DDD4', background: '#FDFCF9',
+              cursor: isRefreshing ? 'default' : 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 16, color: '#3A4A5C',
+              opacity: isRefreshing ? 0.6 : 1,
+            }}
+          >
+            <span style={{
+              display: 'inline-block',
+              animation: isRefreshing ? 'spin .7s linear infinite' : 'none',
+            }}>
+              ↻
+            </span>
+          </button>
+          <button
+            onClick={() => setShowAddRow(v => !v)}
+            style={{
+              padding: '8px 14px', borderRadius: 9, fontSize: 13, fontWeight: 600,
+              border: '1.5px solid #E2DDD4', background: '#FDFCF9', color: '#3A4A5C',
+              cursor: 'pointer', fontFamily: 'DM Sans, sans-serif', flexShrink: 0,
+            }}
+          >
+            + Add Row
+          </button>
+        </div>
       </div>
+      <style dangerouslySetInnerHTML={{ __html: `@keyframes spin { to { transform: rotate(360deg); } }` }} />
 
       {/* Info banner */}
       <div style={{

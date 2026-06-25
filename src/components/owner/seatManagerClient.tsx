@@ -98,12 +98,10 @@ export default function SeatManagerClient({
    * check-in, etc. without a manual page refresh. See
    * hooks/useSeatLayoutRealtime.ts for why this re-fetches rather than
    * patching the changed row directly. */
+  const [isRefreshing, setIsRefreshing] = useState(false)
+
   const refreshSeats = useCallback(() => {
-    // TEMP DIAGNOSTIC LOGGING — remove once the realtime gap is found.
-    console.log('[SeatManagerClient] refreshSeats called, fetching getSeatLayout for', libraryId)
     getSeatLayout(libraryId).then((fresh) => {
-      console.log('[SeatManagerClient] getSeatLayout returned', fresh.length, 'seats. Booked/held seats:',
-        fresh.filter(s => s.live_status === 'booked' || s.live_status === 'held'))
       setSeats(fresh)
       // If the seat the owner currently has open in the side panel changed
       // (e.g. someone else just booked it), update the panel to match —
@@ -113,6 +111,22 @@ export default function SeatManagerClient({
         if (!prevSelected) return null
         return fresh.find((s) => s.id === prevSelected.id) ?? prevSelected
       })
+    })
+  }, [libraryId])
+
+  // Manual refresh button — same refetch as the realtime hook uses, but
+  // user-triggered for the rare case someone wants to force a check right
+  // now (e.g. right after telling a student over the phone "let me check
+  // if that seat's free") without waiting for a realtime event.
+  const handleManualRefresh = useCallback(() => {
+    setIsRefreshing(true)
+    getSeatLayout(libraryId).then((fresh) => {
+      setSeats(fresh)
+      setSelected((prevSelected) => {
+        if (!prevSelected) return null
+        return fresh.find((s) => s.id === prevSelected.id) ?? prevSelected
+      })
+      setIsRefreshing(false)
     })
   }, [libraryId])
 
@@ -244,18 +258,41 @@ export default function SeatManagerClient({
         title="Seat Manager"
         subtitle={`${libraryName} · ${seats.length} seats · IST`}
         action={
-          <button
-            onClick={() => setShowAddRow(v => !v)}
-            style={{
-              padding: '8px 14px', borderRadius: 9, fontSize: 13, fontWeight: 600,
-              border: `1.5px solid ${BORDER}`, background: BG_CARD, color: '#3A4A5C',
-              cursor: 'pointer', fontFamily: FONT_BODY,
-            }}
-          >
-            {showAddRow ? '✕ Cancel' : '+ Add Row'}
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={handleManualRefresh}
+              disabled={isRefreshing}
+              title="Refresh seat status"
+              style={{
+                width: 38, height: 38, borderRadius: 9,
+                border: `1.5px solid ${BORDER}`, background: BG_CARD,
+                cursor: isRefreshing ? 'default' : 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 16, color: '#3A4A5C',
+                opacity: isRefreshing ? 0.6 : 1,
+              }}
+            >
+              <span style={{
+                display: 'inline-block',
+                animation: isRefreshing ? 'spin .7s linear infinite' : 'none',
+              }}>
+                ↻
+              </span>
+            </button>
+            <button
+              onClick={() => setShowAddRow(v => !v)}
+              style={{
+                padding: '8px 14px', borderRadius: 9, fontSize: 13, fontWeight: 600,
+                border: `1.5px solid ${BORDER}`, background: BG_CARD, color: '#3A4A5C',
+                cursor: 'pointer', fontFamily: FONT_BODY,
+              }}
+            >
+              {showAddRow ? '✕ Cancel' : '+ Add Row'}
+            </button>
+          </div>
         }
       />
+      <style dangerouslySetInnerHTML={{ __html: `@keyframes spin { to { transform: rotate(360deg); } }` }} />
 
       {/* Library picker */}
       <LibraryPicker

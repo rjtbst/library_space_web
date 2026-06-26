@@ -51,8 +51,10 @@ import {
   getSeatAvailability,
   initiateBooking,
   confirmBookingPayment,
+  requestBook,
   type SeatAvailability,
   type StudentProfile,
+  type LibraryBook,
 } from '@/lib/actions/student'
 import { useRazorpay } from '@/hooks/userazorpay'
 import SeatGrid from './SeatGrid'
@@ -252,6 +254,7 @@ export default function LibraryDetail({
   library,
   ownerSlots,
   plans,
+  books,
   freeSeats,
   status,
   activeSub,
@@ -260,6 +263,7 @@ export default function LibraryDetail({
   library:    Library
   ownerSlots: SlotConfig[]
   plans:      Plan[]
+  books:      LibraryBook[]
   freeSeats:  number
   status:     LibraryStatus
   activeSub:  { planName: string; endDate: string } | null
@@ -291,6 +295,15 @@ export default function LibraryDetail({
   // Pay state
   const [payLoading, setPayLoading] = useState(false)
   const [payError,   setPayError]   = useState<string>('')
+
+  // Books tab state
+  const [bookQuery,       setBookQuery]       = useState('')
+  const [bookResults,     setBookResults]     = useState<LibraryBook[]>(books)
+  const [requestingId,    setRequestingId]    = useState<string | null>(null)
+  const [requestedIds,    setRequestedIds]    = useState<Set<string>>(new Set())
+  const [requestMsgId,    setRequestMsgId]    = useState<string | null>(null)
+  const [requestErrId,    setRequestErrId]    = useState<string | null>(null)
+  const [requestErrMsg,   setRequestErrMsg]   = useState<string>('')
 
   const activeSlots   = ownerSlots.filter((s) => s.is_active)
   const slotOptions   = activeSlots.map(slotToDisplayOption)
@@ -894,6 +907,105 @@ export default function LibraryDetail({
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Books Catalogue ───────────────────────────────────────────── */}
+      {books.length > 0 && (
+        <div className="bg-white border border-[#E4EAF2] rounded-xl p-4 mb-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-[13px] font-bold text-[#0D1117]">📚 Books Available</div>
+            <span className="text-[11px] text-[#6E7F94]">{books.length} title{books.length !== 1 ? 's' : ''}</span>
+          </div>
+
+          {/* Search within this library's catalog */}
+          <input
+            value={bookQuery}
+            onChange={e => {
+              const q = e.target.value.toLowerCase()
+              setBookQuery(e.target.value)
+              if (!q.trim()) {
+                setBookResults(books)
+              } else {
+                setBookResults(books.filter(b =>
+                  b.title.toLowerCase().includes(q) ||
+                  (b.author ?? '').toLowerCase().includes(q) ||
+                  (b.isbn  ?? '').toLowerCase().includes(q)
+                ))
+              }
+            }}
+            placeholder="Search by title, author, or ISBN…"
+            className="w-full px-3 py-2 text-[12px] rounded-lg border border-[#E4EAF2] outline-none mb-3 focus:border-[#1E5CFF] transition-colors"
+            style={{ fontFamily: 'DM Sans, sans-serif' }}
+          />
+
+          <div className="flex flex-col gap-2 max-h-72 overflow-y-auto">
+            {bookResults.length === 0 && (
+              <div className="text-[12px] text-[#9AACBE] text-center py-4">No books match your search</div>
+            )}
+            {bookResults.map(b => {
+              const isRequested = requestedIds.has(b.id)
+              const isRequesting = requestingId === b.id
+              return (
+                <div
+                  key={b.id}
+                  className="flex items-center justify-between gap-3 py-2 px-3 rounded-lg border border-[#F0F4F8] hover:bg-[#F8FAFC] transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-semibold text-[#0D1117] truncate">{b.title}</div>
+                    {b.author && <div className="text-[11px] text-[#9AACBE] mt-0.5">{b.author}</div>}
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        b.available_copies > 0
+                          ? 'bg-[#ECFDF5] text-[#059669]'
+                          : 'bg-[#FEF2F2] text-[#DC2626]'
+                      }`}>
+                        {b.available_copies > 0 ? `${b.available_copies} available` : 'Not available'}
+                      </span>
+                      <span className="text-[10px] text-[#9AACBE]">{b.total_copies} cop{b.total_copies !== 1 ? 'ies' : 'y'}</span>
+                    </div>
+
+                    {requestMsgId === b.id && (
+                      <div className="text-[11px] text-[#059669] mt-1 font-medium">✓ Request sent! Staff will contact you.</div>
+                    )}
+                    {requestErrId === b.id && (
+                      <div className="text-[11px] text-[#DC2626] mt-1">{requestErrMsg}</div>
+                    )}
+                  </div>
+
+                  <button
+                    disabled={isRequesting || isRequested}
+                    onClick={async () => {
+                      setRequestingId(b.id)
+                      setRequestMsgId(null)
+                      setRequestErrId(null)
+                      const res = await requestBook({ bookId: b.id, libraryId: library.id })
+                      setRequestingId(null)
+                      if (res.success) {
+                        setRequestedIds(prev => new Set([...prev, b.id]))
+                        setRequestMsgId(b.id)
+                        setTimeout(() => setRequestMsgId(null), 4000)
+                      } else {
+                        setRequestErrId(b.id)
+                        setRequestErrMsg(res.success === false ? res.error : 'Failed to send request')
+                        setTimeout(() => setRequestErrId(null), 4000)
+                      }
+                    }}
+                    className="flex-shrink-0 px-3 py-1.5 text-[11px] font-bold rounded-lg border transition-all"
+                    style={{
+                      background: isRequested ? '#ECFDF5' : '#F4F7FB',
+                      color:      isRequested ? '#059669' : '#1E5CFF',
+                      border:     isRequested ? '1.5px solid #86EFAC' : '1.5px solid #C7D4F7',
+                      cursor:     isRequesting || isRequested ? 'default' : 'pointer',
+                      opacity:    isRequesting ? 0.7 : 1,
+                    }}
+                  >
+                    {isRequesting ? '…' : isRequested ? '✓ Requested' : 'Request'}
+                  </button>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
 

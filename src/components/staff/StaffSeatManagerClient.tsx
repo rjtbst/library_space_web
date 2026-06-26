@@ -3,7 +3,6 @@
 // src/components/staff/StaffSeatManagerClient.tsx
 
 import { useState, useTransition, useCallback } from 'react'
-import { useRouter } from 'next/navigation'
 import type { SeniorSeatRow } from '@/lib/actions/staff-seat-actions'
 import {
   seniorToggleSeatActive,
@@ -52,7 +51,6 @@ export default function StaffSeatManagerClient({
   libraryId:   string
   libraryName: string
 }) {
-  const router = useRouter()
   const [seats, setSeats]             = useState(initial)
   const [selected, setSelected]       = useState<SeniorSeatRow | null>(null)
   const [isPending, startTransition]  = useTransition()
@@ -213,7 +211,8 @@ export default function StaffSeatManagerClient({
         showToast(`Row ${newRowLabel.toUpperCase()} added`)
         setShowAddRow(false)
         setNewRowLabel('')
-        router.refresh()
+        // Re-fetch seat layout to show newly inserted seats immediately
+        refreshSeats()
       } else {
         showToast((res as any).error ?? 'Failed to add row')
       }

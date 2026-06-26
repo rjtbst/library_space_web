@@ -1412,7 +1412,8 @@ export async function requestBook(input: {
   libraryId: string
   message?:  string
 }): Promise<ActionResult> {
-  const { supabase, user } = await getSupabaseUser()
+    const supabase = await createServerSupabaseClient()  
+  const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: 'Please sign in to request a book' }
 
   const { data: existing } = await supabase
@@ -1849,4 +1850,110 @@ export async function confirmBookingExtension(input: {
 
   revalidatePath('/bookings')
   return { success: true, data: { bookingId: input.bookingId, newEndTime: newEnd } }
+}
+/* ══════════════════════════════════════════════════════════════════════════
+   CITY-WIDE BOOK SEARCH
+   Students can search for a book across all libraries in their city.
+══════════════════════════════════════════════════════════════════════════ */
+
+export type CityBookResult = {
+  bookId:          string
+  title:           string
+  author:          string | null
+  isbn:            string | null
+  libraryId:       string
+  libraryName:     string
+  city:            string
+  area:            string | null
+  availableCopies: number
+  totalCopies:     number
+}
+
+export async function searchBooksInCity(
+  query:   string,
+  city:    string,
+): Promise<CityBookResult[]> {
+  const supabase = await createServerSupabaseClient()
+
+  const q = query.trim()
+  if (q.length < 2) return []
+
+  // Find all live libraries in the city first
+  const { data: libs } = await supabase
+    .from('libraries')
+    .select('id, name, city, area')
+    .ilike('city', `%${city}%`)
+    .eq('is_active', true)
+
+  if (!libs?.length) return []
+
+  const libIds = libs.map((l: any) => l.id)
+
+  // Search books across all those libraries
+  const { data: books } = await supabase
+    .from('books')
+    .select('id, title, author, isbn, library_id, book_copies(id, status)')
+    .in('library_id', libIds)
+    .or(`title.ilike.%${q}%,author.ilike.%${q}%,isbn.ilike.%${q}%`)
+    .limit(30)
+
+  if (!books?.length) return []
+
+  // Build a library lookup map
+  const libMap = new Map(libs.map((l: any) => [l.id, l]))
+
+  return (books as any[])
+    .map((b) => {
+      const copies         = (b.book_copies ?? []) as { id: string; status: string }[]
+      const availableCopies = copies.filter((c) => c.status === 'available').length
+      const lib             = libMap.get(b.library_id)
+      if (!lib) return null
+      return {
+        bookId:          b.id,
+        title:           b.title  ?? '',
+        author:          b.author ?? null,
+        isbn:            b.isbn   ?? null,
+        libraryId:       b.library_id,
+        libraryName:     lib.name,
+        city:            lib.city,
+        area:            lib.area ?? null,
+        availableCopies,
+        totalCopies:     copies.length,
+      }
+    })
+    .filter(Boolean) as CityBookResult[]
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   LOOKUP USER BY PHONE (for staff issue-to-member flow)
+══════════════════════════════════════════════════════════════════════════ */
+
+export type UserLookup = {
+  id:       string
+  fullName: string
+  phone:    string | null
+  email:    string | null
+}
+
+export async function lookupUserByPhone(phone: string): Promise<UserLookup | null> {
+  const supabase = await createServerSupabaseClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return null // caller must be authenticated staff
+
+  const cleaned = phone.replace(/\D/g, '')
+  if (cleaned.length < 10) return null
+
+  const { data } = await supabase
+    .from('users')
+    .select('id, full_name, phone, email')
+    .ilike('phone', `%${cleaned.slice(-10)}`)
+    .maybeSingle()
+
+  if (!data) return null
+  return {
+    id:       data.id,
+    fullName: data.full_name ?? '',
+    phone:    data.phone ?? null,
+    email:    data.email ?? null,
+  }
 }

@@ -100,34 +100,40 @@ export function useNotifications() {
   // ── Mark one notification as read ────────────────────────────
   const markAsRead = useCallback(async (id: string) => {
     const supabase = createBrowserSupabaseClient()
-    const now      = new Date().toISOString()
+    // Write plain IST (no Z / no offset) to match the DB column convention
+    // of storing timestamp without time zone values in IST wall-clock time.
+    const nowIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 23)
 
     // Optimistic update
     setNotifications((prev) =>
-      prev.map((n) => n.id === id ? { ...n, read_at: now } : n)
+      prev.map((n) => n.id === id ? { ...n, read_at: nowIST } : n)
     )
 
     await supabase
       .from('notifications')
-      .update({ read_at: now } as never)
+      .update({ read_at: nowIST } as never)
       .eq('id', id)
   }, [])
 
   // ── Mark all as read ─────────────────────────────────────────
   const markAllRead = useCallback(async () => {
     const supabase = createBrowserSupabaseClient()
-    const now      = new Date().toISOString()
+    const nowIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 23)
     const userId   = userIdRef.current
     if (!userId) return
 
     // Optimistic update
     setNotifications((prev) =>
-      prev.map((n) => ({ ...n, read_at: n.read_at ?? now }))
+      prev.map((n) => ({ ...n, read_at: n.read_at ?? nowIST }))
     )
 
     await supabase
       .from('notifications')
-      .update({ read_at: now } as never)
+      .update({ read_at: nowIST } as never)
       .eq('user_id', userId)
       .is('read_at', null)
   }, [])

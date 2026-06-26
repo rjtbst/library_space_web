@@ -18,7 +18,13 @@ import { useNotifications, type AppNotification } from '@/hooks/useNotifications
 import ExtendBookingModal from './ExtendBookingModal'
 
 function timeAgo(iso: string): string {
-  const diffMs  = Date.now() - new Date(iso).getTime()
+  // The DB stores created_at as a plain IST wall-clock string without any
+  // timezone marker (e.g. "2026-06-25T14:30:00").  If we pass it raw to
+  // new Date() the JS engine treats it as UTC — making it appear 5h 30m
+  // older than it really is.  Appending '+05:30' tells the parser the
+  // correct timezone so diffMs is always correct.
+  const ts = iso.endsWith('Z') || iso.includes('+') ? iso : iso + '+05:30'
+  const diffMs  = Date.now() - new Date(ts).getTime()
   const diffMin = Math.floor(diffMs / 60_000)
   if (diffMin < 1)  return 'just now'
   if (diffMin < 60) return `${diffMin}m ago`

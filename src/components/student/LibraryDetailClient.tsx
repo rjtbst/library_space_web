@@ -7,6 +7,7 @@
  * the unified inline booking flow:
  *   - library info, slots, status (from getLibraryDetail via page)
  *   - plans (from getLibraryDetail via page)
+ *   - books (from getLibraryBooks via page)
  *   - activeSub (fetched here — user-specific)
  *   - profile (passed from page — for Razorpay prefill in inline booking)
  */
@@ -21,7 +22,7 @@ import {
 
 export default async function LibraryDetailClient({
   library,
-  books: _books,
+  books,
   profile,
 }: {
   library: LibraryCard
@@ -46,6 +47,7 @@ export default async function LibraryDetailClient({
       }}
       ownerSlots={library.slots}
       plans={library.plans}
+      books={books}
       freeSeats={library.available_seats}
       status={library.status}
       activeSub={activeSub}

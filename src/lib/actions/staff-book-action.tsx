@@ -1,4 +1,3 @@
-
 'use server'
  
 // src/lib/actions/staff-book-actions.ts
@@ -158,26 +157,20 @@ export async function getStaffBooksPageData(libraryId: string): Promise<StaffBoo
     .eq('id', libraryId)
     .maybeSingle()
  
-  // Fetch all in parallel
-  const [booksRes, copiesRes, issuesRes, requestsRes] = await Promise.all([
+  // Books and issues fetched in parallel.
+  // Copies fetched after books resolve (we need book IDs first).
+  // Requests fetched WITHOUT a nested users join — the "users_select_own"
+  // RLS policy causes Supabase to silently return null for other users'
+  // profile rows when resolving the join, making requests appear empty.
+  // We fetch user details in a separate query below using the user_ids.
+  const [booksRes, issuesRes, requestsRes] = await Promise.all([
     // All books for this library
     supabase
       .from('books')
       .select('id, title, author, isbn')
       .eq('library_id', libraryId)
       .order('title'),
- 
-    // All copies for this library's books
-    supabase
-      .from('book_copies')
-      .select('id, book_id, status')
-      .in(
-        'book_id',
-        // We'll join via a sub-select workaround: fetch after books resolve
-        // For now pass placeholder — replaced below after books fetch
-        ['__placeholder__'],
-      ),
- 
+
     // All active issues for this library
     supabase
       .from('book_issues')
@@ -192,15 +185,11 @@ export async function getStaffBooksPageData(libraryId: string): Promise<StaffBoo
       .is('returned_at', null)
       .eq('book_copies.books.library_id' as never, libraryId)
       .order('issued_at', { ascending: false }),
- 
-    // Pending book requests for this library
+
+    // Book requests — user_id only; full_name/phone fetched separately below
     supabase
       .from('book_requests')
-      .select(`
-        id, status, message, created_at, book_id,
-        books( title, author ),
-        users( id, full_name, phone )
-      `)
+      .select('id, user_id, status, message, created_at, book_id, books( title, author )')
       .eq('library_id', libraryId)
       .in('status', ['pending', 'approved', 'rejected'])
       .order('created_at', { ascending: false })
@@ -246,19 +235,42 @@ export async function getStaffBooksPageData(libraryId: string): Promise<StaffBoo
       }
     })
  
-  // Build requests
-  const requests: BookRequest[] = (requestsRes.data ?? []).map((r: any) => ({
-    requestId:  r.id,
-    bookId:     r.book_id,
-    title:      r.books?.title  ?? 'Unknown',
-    author:     r.books?.author ?? null,
-    userId:     r.users?.id     ?? '',
-    userName:   r.users?.full_name ?? 'Unknown',
-    userPhone:  r.users?.phone  ?? null,
-    message:    r.message       ?? null,
-    status:     r.status,
-    createdAt:  r.created_at,
-  }))
+  // Fetch user details for all requestors in one query.
+  // We do this separately instead of a nested join because the users table
+  // "users_select_own" RLS policy causes Supabase to silently return null
+  // for any user row that isn't the currently authenticated user, making
+  // all requester names/phones invisible to staff via a join.
+  const rawRequests = requestsRes.data ?? []
+  const requesterIds = [...new Set(
+    rawRequests.map((r: any) => r.user_id).filter(Boolean) as string[]
+  )]
+
+  const userMap = new Map<string, { full_name: string | null; phone: string | null }>()
+  if (requesterIds.length > 0) {
+    const { data: userRows } = await supabase
+      .from('users')
+      .select('id, full_name, phone')
+      .in('id', requesterIds)
+    for (const u of (userRows ?? []) as any[]) {
+      userMap.set(u.id, { full_name: u.full_name ?? null, phone: u.phone ?? null })
+    }
+  }
+
+  const requests: BookRequest[] = rawRequests.map((r: any) => {
+    const u = userMap.get(r.user_id) ?? { full_name: null, phone: null }
+    return {
+      requestId:  r.id,
+      bookId:     r.book_id,
+      title:      r.books?.title  ?? 'Unknown',
+      author:     r.books?.author ?? null,
+      userId:     r.user_id       ?? '',
+      userName:   u.full_name     ?? 'Unknown',
+      userPhone:  u.phone         ?? null,
+      message:    r.message       ?? null,
+      status:     r.status,
+      createdAt:  r.created_at,
+    }
+  })
  
   return {
     libraryId,
@@ -663,3 +675,75 @@ export async function deleteBook(
   return { success: true, data: undefined }
 }
  
+/* ═══════════════════════════════════════════════════════════════════════════
+   LOOKUP REGISTERED USER BY PHONE
+   Staff can search for an existing library member by phone number before
+   issuing a book, so the issue is linked to their account.
+═══════════════════════════════════════════════════════════════════════════ */
+
+export type UserLookup = {
+  id:       string
+  fullName: string
+  phone:    string | null
+}
+
+export async function lookupMemberByPhone(
+  phone:     string,
+  libraryId: string,
+): Promise<ActionResult<UserLookup | null>> {
+  const supabase = await createServerSupabaseClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  // Must be staff of this library
+  const staffRow = await verifyStaff(supabase, libraryId)
+  if (!staffRow) return { success: false, error: 'Access denied' }
+
+  const cleaned = phone.replace(/\D/g, '')
+  if (cleaned.length < 10) return { success: true, data: null }
+
+  const { data } = await supabase
+    .from('users')
+    .select('id, full_name, phone')
+    .ilike('phone', `%${cleaned.slice(-10)}`)
+    .maybeSingle()
+
+  if (!data) return { success: true, data: null }
+
+  return {
+    success: true,
+    data: { id: data.id, fullName: data.full_name ?? '', phone: data.phone ?? null },
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CANCEL BOOK REQUEST  (by the student who made it)
+═══════════════════════════════════════════════════════════════════════════ */
+
+export async function cancelBookRequest(
+  requestId: string,
+): Promise<ActionResult> {
+  const supabase = await createServerSupabaseClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  const { data: req } = await supabase
+    .from('book_requests')
+    .select('id, user_id, status')
+    .eq('id', requestId)
+    .maybeSingle()
+
+  if (!req)                                 return { success: false, error: 'Request not found' }
+  if (req.user_id !== user.id)              return { success: false, error: 'Not your request' }
+  if (!['pending'].includes(req.status))    return { success: false, error: `Cannot cancel a ${req.status} request` }
+
+  const { error } = await supabase
+    .from('book_requests')
+    .update({ status: 'cancelled' } as never)
+    .eq('id', requestId)
+
+  if (error) return { success: false, error: error.message }
+
+  revalidatePath('/library')
+  return { success: true, data: undefined }
+}

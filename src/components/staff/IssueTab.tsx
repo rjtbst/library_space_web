@@ -1,10 +1,12 @@
 'use client'
 
-// src/app/(staff)/staff/books/_components/IssueTab.tsx
-import { useState, useRef, useEffect, useCallback } from 'react'
+// src/components/staff/IssueTab.tsx
+import { useState, useRef, useCallback } from 'react'
 import type { CatalogBook, BookIssue } from '@/lib/actions/staff-book-action'
-import { searchBooks, issueBook } from '@/lib/actions/staff-book-action'
+import { searchBooks, issueBook, lookupMemberByPhone } from '@/lib/actions/staff-book-action'
 import { ACCENT } from '@/lib/constants/theme'
+
+type BorrowerMode = 'guest' | 'member'
 
 type Props = {
   libraryId: string
@@ -25,15 +27,29 @@ export default function IssueTab({ libraryId, catalog, onIssued }: Props) {
   const [searching,    setSearching]    = useState(false)
   const [selected,     setSelected]     = useState<CatalogBook | null>(null)
   const [selectedCopy, setSelectedCopy] = useState<string>('')
-  const [name,         setName]         = useState('')
-  const [phone,        setPhone]        = useState('')
-  const [dueDate,      setDueDate]      = useState(defaultDueDate)
-  const [loading,      setLoading]      = useState(false)
-  const [error,        setError]        = useState<string | null>(null)
-  const [success,      setSuccess]      = useState(false)
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Debounced search
+  // Borrower mode: guest (walk-in) or member (registered user)
+  const [borrowerMode, setBorrowerMode] = useState<BorrowerMode>('guest')
+
+  // Guest fields
+  const [name,  setName]  = useState('')
+  const [phone, setPhone] = useState('')
+
+  // Member lookup fields
+  const [memberPhone,   setMemberPhone]   = useState('')
+  const [memberLookup,  setMemberLookup]  = useState<{ id: string; fullName: string; phone: string | null } | null>(null)
+  const [lookingUp,     setLookingUp]     = useState(false)
+  const [lookupStatus,  setLookupStatus]  = useState<'idle' | 'found' | 'not_found'>('idle')
+
+  const [dueDate,  setDueDate]  = useState(defaultDueDate)
+  const [loading,  setLoading]  = useState(false)
+  const [error,    setError]    = useState<string | null>(null)
+  const [success,  setSuccess]  = useState(false)
+
+  const debounceRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lookupRef     = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Debounced book search
   const handleQuery = useCallback((val: string) => {
     setQuery(val)
     setSelected(null)
@@ -57,27 +73,60 @@ export default function IssueTab({ libraryId, catalog, onIssued }: Props) {
     setError(null)
   }
 
+  // Debounced member phone lookup
+  const handleMemberPhone = useCallback((val: string) => {
+    setMemberPhone(val)
+    setMemberLookup(null)
+    setLookupStatus('idle')
+    if (lookupRef.current) clearTimeout(lookupRef.current)
+    const cleaned = val.replace(/\D/g, '')
+    if (cleaned.length < 10) return
+    lookupRef.current = setTimeout(async () => {
+      setLookingUp(true)
+      const res = await lookupMemberByPhone(val, libraryId)
+      setLookingUp(false)
+      if (res.success && res.data) {
+        setMemberLookup(res.data)
+        setLookupStatus('found')
+      } else {
+        setLookupStatus('not_found')
+      }
+    }, 500)
+  }, [libraryId])
+
   const handleSubmit = async () => {
     if (!selected)        return setError('Select a book first')
     if (!selectedCopy)    return setError('No available copy selected')
-    if (!name.trim())     return setError('Borrower name is required')
     if (!dueDate)         return setError('Due date is required')
+
+    // Validate borrower details
+    if (borrowerMode === 'guest') {
+      if (!name.trim()) return setError('Borrower name is required')
+    } else {
+      if (!memberLookup) return setError('Look up a registered member first')
+    }
 
     setLoading(true)
     setError(null)
+
+    const guestName  = borrowerMode === 'member' ? memberLookup!.fullName : name.trim()
+    const guestPhone = borrowerMode === 'member' ? (memberLookup!.phone ?? '') : phone.trim()
+    const userId     = borrowerMode === 'member' ? memberLookup!.id : null
+
     const res = await issueBook({
       libraryId,
       copyId:     selectedCopy,
-      guestName:  name.trim(),
-      guestPhone: phone.trim(),
+      guestName,
+      guestPhone,
+      userId,
       dueDate,
     })
     setLoading(false)
 
-      if (res.success === false) {
-        setError(res.error)
-        return
-      }
+    if (res.success === false) {
+      setError(res.error)
+      return
+    }
 
     // Build the new BookIssue for optimistic UI
     const now = new Date().toISOString()
@@ -87,10 +136,10 @@ export default function IssueTab({ libraryId, catalog, onIssued }: Props) {
       copyId:      selectedCopy,
       title:       selected.title,
       author:      selected.author,
-      issuedTo:    name.trim(),
-      phone:       phone.trim() || null,
-      isGuest:     true,
-      userId:      null,
+      issuedTo:    guestName,
+      phone:       guestPhone || null,
+      isGuest:     !userId,
+      userId,
       issuedAt:    now,
       dueDate,
       isOverdue:   false,
@@ -118,6 +167,9 @@ export default function IssueTab({ libraryId, catalog, onIssued }: Props) {
       setSelected(null)
       setName('')
       setPhone('')
+      setMemberPhone('')
+      setMemberLookup(null)
+      setLookupStatus('idle')
       setDueDate(defaultDueDate())
       setSelectedCopy('')
       onIssued(updatedCatalog, newIssue)
@@ -225,36 +277,115 @@ export default function IssueTab({ libraryId, catalog, onIssued }: Props) {
         </div>
       )}
 
+      {/* Borrower mode toggle */}
+      <div>
+        <label style={labelStyle}>Borrower Type</label>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {(['guest', 'member'] as BorrowerMode[]).map(mode => (
+            <button
+              key={mode}
+              onClick={() => {
+                setBorrowerMode(mode)
+                setError(null)
+                setMemberLookup(null)
+                setLookupStatus('idle')
+                setMemberPhone('')
+              }}
+              style={{
+                flex: 1,
+                padding: '9px 0',
+                borderRadius: 8,
+                border: `1.5px solid ${borrowerMode === mode ? ACCENT : '#E2DDD4'}`,
+                background: borrowerMode === mode ? '#ECFDF5' : '#FDFCF9',
+                color: borrowerMode === mode ? '#059669' : '#6E7F94',
+                fontWeight: 600,
+                fontSize: 12,
+                cursor: 'pointer',
+                fontFamily: 'DM Sans, sans-serif',
+                textTransform: 'capitalize',
+              }}
+            >
+              {mode === 'guest' ? '🚶 Walk-in / Guest' : '👤 Registered Member'}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Borrower details */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div>
-          <label style={labelStyle}>Borrower Name *</label>
-          <input
-            value={name}
-            onChange={e => setName(e.target.value)}
-            placeholder="Full name"
-            style={inputStyle}
-          />
+      {borrowerMode === 'guest' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label style={labelStyle}>Borrower Name *</label>
+            <input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Full name"
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Phone (optional)</label>
+            <input
+              value={phone}
+              onChange={e => setPhone(e.target.value)}
+              placeholder="10-digit mobile"
+              type="tel"
+              style={inputStyle}
+            />
+          </div>
         </div>
+      ) : (
         <div>
-          <label style={labelStyle}>Phone (optional)</label>
-          <input
-            value={phone}
-            onChange={e => setPhone(e.target.value)}
-            placeholder="10-digit mobile"
-            type="tel"
-            style={inputStyle}
-          />
+          <label style={labelStyle}>Member Phone Number</label>
+          <div style={{ position: 'relative' }}>
+            <input
+              value={memberPhone}
+              onChange={e => handleMemberPhone(e.target.value)}
+              placeholder="Enter member's phone number"
+              type="tel"
+              style={inputStyle}
+            />
+            {lookingUp && (
+              <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: '#9AAAB8' }}>
+                looking up…
+              </span>
+            )}
+          </div>
+
+          {lookupStatus === 'found' && memberLookup && (
+            <div style={{
+              marginTop: 8, padding: '10px 12px', borderRadius: 8,
+              background: '#ECFDF5', border: '1px solid #86EFAC',
+              display: 'flex', alignItems: 'center', gap: 8,
+            }}>
+              <span style={{ fontSize: 18 }}>✅</span>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#065F46' }}>{memberLookup.fullName}</div>
+                <div style={{ fontSize: 11, color: '#059669' }}>{memberLookup.phone}</div>
+              </div>
+            </div>
+          )}
+
+          {lookupStatus === 'not_found' && (
+            <div style={{
+              marginTop: 8, padding: '10px 12px', borderRadius: 8,
+              background: '#FEF2F2', border: '1px solid #FCA5A5', fontSize: 12, color: '#DC2626',
+            }}>
+              No registered member found with this number. Use Walk-in mode instead.
+            </div>
+          )}
         </div>
-        <div>
-          <label style={labelStyle}>Due Date *</label>
-          <input
-            value={dueDate}
-            onChange={e => setDueDate(e.target.value)}
-            type="date"
-            style={inputStyle}
-          />
-        </div>
+      )}
+
+      {/* Due date */}
+      <div>
+        <label style={labelStyle}>Due Date *</label>
+        <input
+          value={dueDate}
+          onChange={e => setDueDate(e.target.value)}
+          type="date"
+          style={inputStyle}
+        />
       </div>
 
       {error && (

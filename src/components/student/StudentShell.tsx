@@ -35,6 +35,7 @@ import { StudentNavProgressBar } from './NavProgressBar'
 const NAV_ITEMS = [
   { href: '/explore',        icon: Building2,    label: 'Find Libraries'    },
   { href: '/bookings',       icon: CalendarDays, label: 'My Bookings'       },
+  { href: '/books',          icon: BookOpen,     label: 'Search Books'      },
   { href: '/subscriptions',  icon: CreditCard,   label: 'Membership Plans'  },
   { href: '/payments',       icon: Receipt,      label: 'Payment History'   },
   { href: '/my-books',       icon: Package,      label: 'My Borrowed Books' },

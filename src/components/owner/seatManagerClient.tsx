@@ -2,6 +2,7 @@
 'use client'
 
 import { useState, useTransition, useMemo, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import type { SeatRow } from '@/lib/actions/owner'
 import { toggleSeatActive, addSeatRow, manualBookSeat, forceFreeSeat, editSeatRow, getSeatLayout } from '@/lib/actions/owner'
 import { toISTInputValue, inputToDB, fmtIST, fmtInputPreview } from '@/lib/ist'
@@ -50,6 +51,7 @@ export default function SeatManagerClient({
   libraryName: string
   // libraries prop removed — comes from useOwner() context
 }) {
+  const router              = useRouter()
   const { libraries }       = useOwner()
   const { toast, showToast } = useToast(3500)
 
@@ -220,13 +222,10 @@ export default function SeatManagerClient({
         showToast(`Row ${newRowLabel.toUpperCase()} added`)
         setShowAddRow(false)
         setNewRowLabel('')
-        // Re-fetch seat layout to pick up the newly inserted seats
-        refreshSeats()
-      } else {
-        showToast((res as any).error ?? 'Failed to add row')
+        router.refresh()
       }
     })
-  }, [libraryId, newRowLabel, newRowCols, showToast, refreshSeats])
+  }, [libraryId, newRowLabel, newRowCols, showToast, router])
 
   const handleEditRow = useCallback(() => {
     if (!editingRow) return
@@ -235,13 +234,12 @@ export default function SeatManagerClient({
       if (res.success) {
         showToast(`Row ${editingRow} updated`)
         setEditingRow(null)
-        // Re-fetch to reflect renamed/resized row immediately
-        refreshSeats()
+        router.refresh()
       } else {
         showToast((res as any).error ?? 'Update failed')
       }
     })
-  }, [editingRow, editRowLabel, editRowCount, libraryId, showToast, refreshSeats])
+  }, [editingRow, editRowLabel, editRowCount, libraryId, showToast, router])
 
   const selectSeat = useCallback((seat: SeatRow) => {
     setSelected(s => s?.id === seat.id ? null : seat)
